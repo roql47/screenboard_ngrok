@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+
+body {
+  font-family: 'Noto Sans KR', sans-serif;
+  margin: 0;
+  padding: 0;
+  background: linear-gradient(135deg, #1f2937 0%, #000000 50%, #111827 100%);
+  min-height: 100vh;
+}
+
+.digital-font {
+  font-family: 'Courier New', monospace;
+  font-weight: bold;
+}
+
+.glow {
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+}
