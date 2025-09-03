@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Calendar, User, Edit3, Check, X, Plus, Minus } from 'lucide-react'
 
-const DoctorSchedule = ({ isAdminMode, schedule = {}, onUpdateSchedule }) => {
+const DoctorSchedule = ({ isAdminMode, schedule = {}, onUpdateSchedule, isDarkMode }) => {
   const [editingCell, setEditingCell] = useState(null)
   const [editValue, setEditValue] = useState('')
   
@@ -122,21 +122,37 @@ const DoctorSchedule = ({ isAdminMode, schedule = {}, onUpdateSchedule }) => {
   }
 
   return (
-    <div className="bg-black/40 backdrop-blur-md rounded-2xl p-6 board-shadow border border-gray-700">
+    <div className={`backdrop-blur-md rounded-2xl p-6  border transition-colors duration-300 ${
+      isDarkMode 
+        ? 'bg-black/40 border-gray-700' 
+        : 'bg-white/90 border-gray-300'
+    }`}>
       <div className="flex items-center gap-3 mb-6">
-        <Calendar className="w-6 h-6 text-blue-400" />
-        <h3 className="text-2xl font-semibold text-white">외래 진료일정</h3>
+        <Calendar className={`w-6 h-6 transition-colors duration-300 ${
+          isDarkMode ? 'text-blue-400' : 'text-blue-600'
+        }`} />
+        <h3 className={`text-2xl font-semibold transition-colors duration-300 ${
+          isDarkMode ? 'text-white' : 'text-black'
+        }`}>외래 진료일정</h3>
       </div>
 
       <div className="overflow-x-auto">
         <table className="w-full border-collapse">
           <thead>
             <tr>
-              <th className="border border-gray-600 bg-gray-800/50 p-3 text-white font-semibold text-center">
+              <th className={`border p-3 font-semibold text-center transition-colors duration-300 ${
+                isDarkMode 
+                  ? 'border-gray-600 bg-gray-800/50 text-white' 
+                  : 'border-gray-300 bg-gray-200 text-black'
+              }`}>
                 시간
               </th>
               {days.map((day) => (
-                <th key={day} className="border border-gray-600 bg-gray-800/50 p-3 text-white font-semibold text-center min-w-[120px]">
+                <th key={day} className={`border p-3 font-semibold text-center min-w-[120px] transition-colors duration-300 ${
+                  isDarkMode 
+                    ? 'border-gray-600 bg-gray-800/50 text-white' 
+                    : 'border-gray-300 bg-gray-200 text-black'
+                }`}>
                   {day}요일
                 </th>
               ))}
@@ -145,11 +161,17 @@ const DoctorSchedule = ({ isAdminMode, schedule = {}, onUpdateSchedule }) => {
           <tbody>
             {times.map((time) => (
               <tr key={time}>
-                <td className="border border-gray-600 bg-gray-800/30 p-3 text-white font-semibold text-center">
+                <td className={`border p-3 font-semibold text-center transition-colors duration-300 ${
+                  isDarkMode 
+                    ? 'border-gray-600 bg-gray-800/30 text-white' 
+                    : 'border-gray-300 bg-gray-100 text-black'
+                }`}>
                   {time}
                 </td>
                 {days.map((day) => (
-                  <td key={`${day}-${time}`} className="border border-gray-600 p-2 text-center">
+                  <td key={`${day}-${time}`} className={`border p-2 text-center transition-colors duration-300 ${
+                    isDarkMode ? 'border-gray-600' : 'border-gray-300'
+                  }`}>
                     <div className="space-y-1">
                       {(localSchedule[day]?.[time] || []).map((doctor, index) => {
                         const cellKey = `${day}-${time}-${index}`
@@ -159,8 +181,11 @@ const DoctorSchedule = ({ isAdminMode, schedule = {}, onUpdateSchedule }) => {
                           <div
                             key={index}
                             className={`
-                              flex items-center justify-center gap-1 p-2 bg-blue-900/20 rounded-lg border border-blue-700/30 relative group
-                              ${isAdminMode ? 'hover:bg-blue-800/30' : ''}
+                              flex items-center justify-center gap-1 p-2 rounded-lg border relative group transition-colors duration-300
+                              ${isDarkMode 
+                                ? 'bg-blue-900/20 border-blue-700/30' + (isAdminMode ? ' hover:bg-blue-800/30' : '')
+                                : 'bg-blue-50 border-blue-200' + (isAdminMode ? ' hover:bg-blue-100' : '')
+                              }
                             `}
                           >
                             {isEditing ? (
@@ -169,7 +194,11 @@ const DoctorSchedule = ({ isAdminMode, schedule = {}, onUpdateSchedule }) => {
                                   type="text"
                                   value={editValue}
                                   onChange={(e) => setEditValue(e.target.value)}
-                                  className="w-16 px-1 py-1 bg-gray-800 border border-gray-600 rounded text-white text-sm text-center"
+                                  className={`w-16 px-1 py-1 border rounded text-sm text-center transition-colors duration-300 ${
+                                    isDarkMode 
+                                      ? 'bg-gray-800 border-gray-600 text-white' 
+                                      : 'bg-white border-gray-300 text-black'
+                                  }`}
                                   onKeyPress={(e) => {
                                     if (e.key === 'Enter') saveEdit(day, time, index)
                                     if (e.key === 'Escape') cancelEdit()
@@ -193,15 +222,23 @@ const DoctorSchedule = ({ isAdminMode, schedule = {}, onUpdateSchedule }) => {
                               </div>
                             ) : (
                               <>
-                                <User className="w-3 h-3 text-blue-400" />
-                                <span className="text-base text-blue-200 font-medium whitespace-nowrap">
+                                <User className={`w-3 h-3 transition-colors duration-300 ${
+                                  isDarkMode ? 'text-blue-400' : 'text-black'
+                                }`} />
+                                <span className={`text-base font-medium whitespace-nowrap transition-colors duration-300 ${
+                                  isDarkMode ? 'text-blue-200' : 'text-black'
+                                }`}>
                                   {doctor}
                                 </span>
                                 {isAdminMode && (
                                   <div className="absolute -top-1 -right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button
                                       onClick={() => startEdit(day, time, index, doctor)}
-                                      className="p-1 bg-gray-600/20 border border-gray-500 rounded text-gray-300 hover:bg-gray-600/30"
+                                      className={`p-1 border rounded transition-colors duration-300 ${
+                                        isDarkMode 
+                                          ? 'bg-gray-600/20 border-gray-500 text-gray-300 hover:bg-gray-600/30'
+                                          : 'bg-white border-gray-300 text-black hover:bg-gray-50'
+                                      }`}
                                       title="편집"
                                     >
                                       <Edit3 className="w-2 h-2" />

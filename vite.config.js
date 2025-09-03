@@ -11,8 +11,9 @@ export default defineConfig({
     allowedHosts: [
       'localhost',
       '127.0.0.1',
-      '4a2021e0c8f0.ngrok-free.app', // 현재 ngrok URL 추가
+      '9d45ee3c6609.ngrok.app', // 현재 ngrok URL 추가
       '.ngrok-free.app',  // 모든 ngrok 무료 도메인 허용
+      '.ngrok.app',       // 모든 ngrok 유료 도메인 허용
       '.ngrok.io',        // 모든 ngrok 도메인 허용
       'all'               // 모든 호스트 허용
     ],

@@ -1,15 +1,27 @@
-import React, { useState } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { Clock, User, Stethoscope, Edit3, Check, X, Plus, Trash2 } from 'lucide-react'
 
-const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdatePatientName, onUpdatePatientNumber, onUpdatePatientStatus, onUpdatePatientProcedure, onUpdatePatientDoctor, onAddPatient, onDeletePatient, onMovePatientToRoom }) => {
+const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkMode, onUpdatePatientName, onUpdatePatientNumber, onUpdatePatientStatus, onUpdatePatientProcedure, onUpdatePatientDoctor, onUpdatePatientNotes, onAddPatient, onDeletePatient, onMovePatientToRoom }) => {
   const [editingPatient, setEditingPatient] = useState(null)
-  const [editValues, setEditValues] = useState({ name: '', number: '', procedure: '', doctor: '' })
+  const [editValues, setEditValues] = useState({ name: '', number: '', procedure: '', doctor: '', notes: '' })
+  
+  // 입력 필드 포커스 유지를 위한 ref들
+  const numberInputRef = useRef(null)
+  const nameInputRef = useRef(null)
+  const procedureInputRef = useRef(null)
+  const doctorInputRef = useRef(null)
+  const notesInputRef = useRef(null)
+  
+  // 포커스 상태 추적
+  const [focusedField, setFocusedField] = useState(null)
+  const [cursorPosition, setCursorPosition] = useState(0)
   const [showAddForm, setShowAddForm] = useState(false)
   const [newPatient, setNewPatient] = useState({
     number: '',
     name: '',
     procedure: '', // 시술명
     doctor: '', // 담당의사
+    notes: '', // 비고
     status: 'waiting'
   })
 
@@ -53,15 +65,29 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
     }
   }
   const getStatusColor = (status) => {
+    const baseClasses = isDarkMode 
+      ? {
+          procedure: 'bg-orange-900/30 border-orange-500 text-orange-200',
+          waiting: 'bg-blue-900/30 border-blue-500 text-blue-200',
+          completed: 'bg-gray-800/30 border-gray-500 text-gray-400',
+          default: 'bg-gray-800/30 border-gray-500 text-gray-300'
+        }
+      : {
+          procedure: 'bg-orange-50 border-orange-300 text-black',
+          waiting: 'bg-blue-50 border-blue-300 text-black',
+          completed: 'bg-gray-100 border-gray-300 text-black',
+          default: 'bg-gray-100 border-gray-300 text-black'
+        };
+
     switch (status) {
       case 'procedure':
-        return 'bg-orange-900/30 border-orange-500 text-orange-200'
+        return baseClasses.procedure
       case 'waiting':
-        return 'bg-blue-900/30 border-blue-500 text-blue-200'
+        return baseClasses.waiting
       case 'completed':
-        return 'bg-gray-800/30 border-gray-500 text-gray-400'
+        return baseClasses.completed
       default:
-        return 'bg-gray-800/30 border-gray-500 text-gray-300'
+        return baseClasses.default
     }
   }
 
@@ -98,12 +124,15 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
       name: patient.patient_name || patient.name || '', 
       number: patient.patient_id || patient.number || '',
       procedure: patient.procedure || patient.assigned_doctor || '',
-      doctor: patient.doctor || ''
+      doctor: patient.doctor || '',
+      notes: patient.notes || ''
     })
   }
 
   // 편집 저장
   const saveEdit = () => {
+    console.log('💾 편집 저장 시작:', editValues);
+    
     if (editValues.name.trim()) {
       onUpdatePatientName(editingPatient, editValues.name.trim())
     }
@@ -116,19 +145,123 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
     if (editValues.doctor.trim()) {
       onUpdatePatientDoctor(editingPatient, editValues.doctor.trim())
     }
+    if (editValues.notes.trim()) {
+      onUpdatePatientNotes(editingPatient, editValues.notes.trim())
+    }
+    
+    console.log('✅ 편집 저장 완료 - 편집 모드 종료');
     setEditingPatient(null)
-    setEditValues({ name: '', number: '', procedure: '', doctor: '' })
+    setEditValues({ name: '', number: '', procedure: '', doctor: '', notes: '' })
+  }
+
+  // 포커스와 커서 위치 복원을 위한 useEffect
+  useEffect(() => {
+    if (focusedField && editingPatient) {
+      const getInputRef = (field) => {
+        switch (field) {
+          case 'number': return numberInputRef;
+          case 'name': return nameInputRef;
+          case 'procedure': return procedureInputRef;
+          case 'doctor': return doctorInputRef;
+          case 'notes': return notesInputRef;
+          default: return null;
+        }
+      };
+      
+      const inputRef = getInputRef(focusedField);
+      if (inputRef?.current) {
+        console.log(`🎯 포커스 복원: ${focusedField}, 커서위치: ${cursorPosition}`);
+        inputRef.current.focus();
+        inputRef.current.setSelectionRange(cursorPosition, cursorPosition);
+      }
+    }
+  }, [editValues, focusedField, cursorPosition, editingPatient]);
+
+  // 포커스 유지하면서 값 변경
+  const handleFieldChange = useCallback((field, value, inputRef) => {
+    // 현재 커서 위치 저장
+    const currentElement = inputRef.current;
+    const newCursorPosition = currentElement ? currentElement.selectionStart : 0;
+    
+    console.log(`✏️ 필드 변경: ${field} = "${value}", 커서위치: ${newCursorPosition}`);
+    
+    // 포커스 상태 업데이트
+    setFocusedField(field);
+    setCursorPosition(newCursorPosition);
+    
+    // 상태 업데이트
+    setEditValues(prev => ({ ...prev, [field]: value }));
+  }, []);
+
+  // 편집 중 필드별 저장 (Enter 키나 포커스 이탈 시에만)
+  const saveField = (field, value) => {
+    if (!value.trim()) return; // 빈 값은 저장하지 않음
+    
+    console.log(`💾 필드 저장: ${field} = "${value}"`);
+    
+    switch (field) {
+      case 'name':
+        onUpdatePatientName(editingPatient, value.trim());
+        break;
+      case 'number':
+        onUpdatePatientNumber(editingPatient, value.trim());
+        break;
+      case 'procedure':
+        onUpdatePatientProcedure(editingPatient, value.trim());
+        break;
+      case 'doctor':
+        onUpdatePatientDoctor(editingPatient, value.trim());
+        break;
+      case 'notes':
+        onUpdatePatientNotes(editingPatient, value.trim());
+        break;
+    }
   }
 
   // 편집 취소
   const cancelEdit = () => {
     setEditingPatient(null)
-    setEditValues({ name: '', number: '', procedure: '', doctor: '' })
+    setEditValues({ name: '', number: '', procedure: '', doctor: '', notes: '' })
+    setFocusedField(null)
+    setCursorPosition(0)
+  }
+
+  // 포커스 시작 핸들러
+  const handleFocus = (field, inputRef) => {
+    console.log(`🎯 포커스 시작: ${field}`);
+    setFocusedField(field);
+    const currentElement = inputRef.current;
+    if (currentElement) {
+      setCursorPosition(currentElement.selectionStart || 0);
+    }
+  }
+
+  // 포커스 종료 핸들러  
+  const handleBlur = () => {
+    console.log('🔄 포커스 종료');
+    // 포커스 상태는 유지하되, 약간의 지연 후 체크
+    setTimeout(() => {
+      const activeElement = document.activeElement;
+      const isInputField = [numberInputRef, nameInputRef, procedureInputRef, doctorInputRef, notesInputRef]
+        .some(ref => ref.current === activeElement);
+      
+      if (!isInputField) {
+        setFocusedField(null);
+        setCursorPosition(0);
+      }
+    }, 100);
   }
 
   // 상태 변경
   const handleStatusChange = (patientId, newStatus) => {
-    onUpdatePatientStatus(patientId, newStatus)
+    // 환자 정보에서 기존 시술명 찾기
+    const patient = patients.find(p => p.id === patientId);
+    const currentProcedure = patient?.assigned_doctor || patient?.procedure;
+    
+    console.log(`🔄 상태 변경: 환자ID=${patientId}, 상태=${newStatus}, 기존시술명="${currentProcedure}"`);
+    
+    // 기존 시술명을 함께 전달하여 보존
+    onUpdatePatientStatus(patientId, newStatus, currentProcedure)
   }
 
   // 환자 추가 폼 표시/숨기기
@@ -139,6 +272,7 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
       name: '',
       procedure: '',
       doctor: '',
+      notes: '',
       status: 'waiting'
     })
   }
@@ -185,13 +319,21 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`bg-black/40 backdrop-blur-md rounded-2xl p-6 board-shadow border-2 transition-all duration-300 ${
+      className={`backdrop-blur-md rounded-2xl p-6 border-2 transition-all duration-300 ${
+        isDarkMode 
+          ? 'bg-black/40 border-gray-600' 
+          : 'bg-white/90 border-gray-300'
+      } ${
         isDragOver ? 'border-green-400 bg-green-900/30 shadow-lg shadow-green-400/20' : 'border-gray-700'
       }`}
     >
       <div className="flex items-center gap-3 mb-6">
-        <User className="w-8 h-8 text-blue-400" />
-        <h2 className="text-3xl font-bold text-white">{roomTitle}</h2>
+        <User className={`w-8 h-8 transition-colors duration-300 ${
+          isDarkMode ? 'text-blue-400' : 'text-blue-600'
+        }`} />
+        <h2 className={`text-3xl font-bold transition-colors duration-300 ${
+          isDarkMode ? 'text-white' : 'text-black'
+        }`}>{roomTitle}</h2>
         {isDragOver && (
           <div className="text-green-400 text-sm font-medium animate-pulse">
             🏠 환자를 여기로 이동
@@ -292,22 +434,35 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
                   
                   // 드롭존 찾기 (부모 요소들을 순회)
                   let dropZone = elementBelow
-                  while (dropZone && !dropZone.hasAttribute('data-room')) {
+                  let attempts = 0
+                  const maxAttempts = 10 // 무한 루프 방지
+                  
+                  while (dropZone && !dropZone.hasAttribute('data-room') && attempts < maxAttempts) {
                     dropZone = dropZone.parentElement
+                    attempts++
                   }
                   
-                  if (dropZone) {
+                  if (dropZone && dropZone.hasAttribute('data-room')) {
                     const targetRoom = dropZone.getAttribute('data-room')
                     const currentRoom = patient.department || patient.room
                     
                     console.log('📍 터치 드롭:', patient.patient_name || patient.name, 'from', currentRoom, '→', targetRoom)
                     
-                    if (currentRoom !== targetRoom) {
-                      console.log('✅ 터치로 환자 방 이동 실행:', patient.id, '→', targetRoom)
-                      onMovePatientToRoom(patient.id, targetRoom)
+                    // 유효한 방 이름인지 확인
+                    const validRooms = ['Angio 1R', 'Angio 2R', 'Hybrid Room']
+                    if (validRooms.includes(targetRoom)) {
+                      if (currentRoom !== targetRoom) {
+                        console.log('✅ 터치로 환자 방 이동 실행:', patient.id, '→', targetRoom)
+                        onMovePatientToRoom(patient.id, targetRoom)
+                      } else {
+                        console.log('⚠️ 같은 방으로 터치 이동 시도 - 무시')
+                      }
                     } else {
-                      console.log('⚠️ 같은 방으로 터치 이동 시도 - 무시')
+                      console.log('❌ 유효하지 않은 방 이름:', targetRoom)
                     }
+                  } else {
+                    console.log('❌ 유효한 드롭존을 찾을 수 없음 - 드래그 취소')
+                    console.log('💡 올바른 방(Angio 1R, 2R, Hybrid Room)에 드롭해주세요')
                   }
                 }
                 
@@ -352,59 +507,147 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
                       <div className="space-y-2">
                         <div className="grid grid-cols-2 gap-2">
                           <input
+                            ref={numberInputRef}
                             type="text"
                             value={editValues.number}
-                            onChange={(e) => setEditValues(prev => ({ ...prev, number: e.target.value }))}
-                            className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-white text-sm font-bold digital-font"
+                            onChange={(e) => handleFieldChange('number', e.target.value, numberInputRef)}
+                            onFocus={() => handleFocus('number', numberInputRef)}
+                            onBlur={handleBlur}
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter') {
+                                saveField('number', e.target.value);
+                              }
+                            }}
+                            className={`px-2 py-1 border rounded text-sm font-bold digital-font transition-colors duration-300 ${
+                              isDarkMode 
+                                ? 'bg-gray-800 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-black'
+                            }`}
                             placeholder="등록번호"
                           />
                           <input
+                            ref={nameInputRef}
                             type="text"
                             value={editValues.name}
-                            onChange={(e) => setEditValues(prev => ({ ...prev, name: e.target.value }))}
-                            className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-white text-sm"
+                            onChange={(e) => handleFieldChange('name', e.target.value, nameInputRef)}
+                            onFocus={() => handleFocus('name', nameInputRef)}
+                            onBlur={handleBlur}
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter') {
+                                saveField('name', e.target.value);
+                              }
+                            }}
+                            className={`px-2 py-1 border rounded text-sm transition-colors duration-300 ${
+                              isDarkMode 
+                                ? 'bg-gray-800 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-black'
+                            }`}
                             placeholder="환자명"
                           />
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                           <input
+                            ref={procedureInputRef}
                             type="text"
                             value={editValues.procedure}
-                            onChange={(e) => setEditValues(prev => ({ ...prev, procedure: e.target.value }))}
-                            className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-white text-sm"
+                            onChange={(e) => handleFieldChange('procedure', e.target.value, procedureInputRef)}
+                            onFocus={() => handleFocus('procedure', procedureInputRef)}
+                            onBlur={handleBlur}
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter') {
+                                saveField('procedure', e.target.value);
+                              }
+                            }}
+                            className={`px-2 py-1 border rounded text-sm transition-colors duration-300 ${
+                              isDarkMode 
+                                ? 'bg-gray-800 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-black'
+                            }`}
                             placeholder="시술명"
                           />
                           <input
+                            ref={doctorInputRef}
                             type="text"
                             value={editValues.doctor}
-                            onChange={(e) => setEditValues(prev => ({ ...prev, doctor: e.target.value }))}
-                            className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-white text-sm"
+                            onChange={(e) => handleFieldChange('doctor', e.target.value, doctorInputRef)}
+                            onFocus={() => handleFocus('doctor', doctorInputRef)}
+                            onBlur={handleBlur}
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter') {
+                                saveField('doctor', e.target.value);
+                              }
+                            }}
+                            className={`px-2 py-1 border rounded text-sm transition-colors duration-300 ${
+                              isDarkMode 
+                                ? 'bg-gray-800 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-black'
+                            }`}
                             placeholder="담당의사"
+                          />
+                        </div>
+                        <div className="grid grid-cols-1 gap-2">
+                          <input
+                            ref={notesInputRef}
+                            type="text"
+                            value={editValues.notes}
+                            onChange={(e) => handleFieldChange('notes', e.target.value, notesInputRef)}
+                            onFocus={() => handleFocus('notes', notesInputRef)}
+                            onBlur={handleBlur}
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter') {
+                                saveField('notes', e.target.value);
+                              }
+                            }}
+                            className={`px-2 py-1 border rounded text-sm transition-colors duration-300 ${
+                              isDarkMode 
+                                ? 'bg-gray-800 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-black'
+                            }`}
+                            placeholder="비고 (선택사항)"
                           />
                         </div>
                       </div>
                     ) : (
                       // 일반 표시 모드
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <div className="text-xl font-bold digital-font text-white">
-                            {maskPersonalInfo(patient.patient_id || patient.number, 'number')}
-                          </div>
-                          <div className="text-base opacity-75 text-gray-300">
-                            {maskPersonalInfo(patient.patient_name || patient.name, 'name')}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Stethoscope className="w-4 h-4 text-gray-400" />
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 gap-4">
                           <div>
-                            {(patient.procedure || patient.assigned_doctor) && (
-                              <div className="text-base font-medium text-white">{patient.procedure || patient.assigned_doctor || ''}</div>
-                            )}
-                            {patient.doctor && (
-                              <div className="text-sm opacity-75 text-gray-400">{patient.doctor}</div>
-                            )}
+                            <div className={`text-2xl font-bold digital-font transition-colors duration-300 ${
+                              isDarkMode ? 'text-white' : 'text-black'
+                            }`}>
+                              {maskPersonalInfo(patient.patient_id || patient.number, 'number')}
+                            </div>
+                            <div className={`text-lg opacity-75 transition-colors duration-300 ${
+                              isDarkMode ? 'text-gray-300' : 'text-black'
+                            }`}>
+                              {maskPersonalInfo(patient.patient_name || patient.name, 'name')}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Stethoscope className={`w-4 h-4 transition-colors duration-300 ${
+                              isDarkMode ? 'text-gray-400' : 'text-black'
+                            }`} />
+                            <div>
+                              {(patient.procedure || patient.assigned_doctor) && (
+                                <div className={`text-lg font-medium transition-colors duration-300 ${
+                                  isDarkMode ? 'text-white' : 'text-black'
+                                }`}>{patient.procedure || patient.assigned_doctor || ''}</div>
+                              )}
+                              {patient.doctor && (
+                                <div className={`text-base opacity-75 transition-colors duration-300 ${
+                                  isDarkMode ? 'text-gray-400' : 'text-black'
+                                }`}>{patient.doctor}</div>
+                              )}
+                            </div>
                           </div>
                         </div>
+                        {patient.notes && patient.notes.trim() && (
+                          <div className={`text-sm font-medium px-2 py-1 rounded transition-colors duration-300 ${
+                            isDarkMode ? 'bg-emerald-900/40 border border-emerald-600/60 text-emerald-200' : 'bg-blue-50 border border-blue-200 text-blue-800'
+                          }`}>
+                            {patient.notes}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -417,7 +660,11 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
                       <select
                         value={patient.status}
                         onChange={(e) => handleStatusChange(patient.id, e.target.value)}
-                        className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-white text-xs pointer-events-auto"
+                        className={`px-2 py-1 border rounded text-xs pointer-events-auto transition-colors duration-300 ${
+                          isDarkMode 
+                            ? 'bg-gray-800 border-gray-600 text-white' 
+                            : 'bg-white border-gray-300 text-black'
+                        }`}
                       >
                         <option value="waiting">대기중</option>
                         <option value="procedure">시술중</option>
@@ -441,14 +688,22 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
                           <>
                             <button
                               onClick={saveEdit}
-                              className="p-1 bg-green-600/20 border border-green-500 rounded text-green-300 hover:bg-green-600/30 pointer-events-auto"
-                              title="저장"
+                              className={`p-1 border rounded pointer-events-auto transition-colors duration-300 ${
+                                isDarkMode 
+                                  ? 'bg-green-600/20 border-green-500 text-green-300 hover:bg-green-600/30' 
+                                  : 'bg-green-100 border-green-600 text-green-800 hover:bg-green-200'
+                              }`}
+                              title="모든 변경사항 저장 (Enter 키로도 개별 저장 가능)"
                             >
                               <Check className="w-3 h-3" />
                             </button>
                             <button
                               onClick={cancelEdit}
-                              className="p-1 bg-red-600/20 border border-red-500 rounded text-red-300 hover:bg-red-600/30 pointer-events-auto"
+                              className={`p-1 border rounded pointer-events-auto transition-colors duration-300 ${
+                                isDarkMode 
+                                  ? 'bg-red-600/20 border-red-500 text-red-300 hover:bg-red-600/30' 
+                                  : 'bg-red-100 border-red-600 text-red-800 hover:bg-red-200'
+                              }`}
                               title="취소"
                             >
                               <X className="w-3 h-3" />
@@ -458,14 +713,22 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
                           <>
                             <button
                               onClick={() => startEdit(patient)}
-                              className="p-1 bg-gray-600/20 border border-gray-500 rounded text-gray-300 hover:bg-gray-600/30 pointer-events-auto"
+                              className={`p-1 border rounded pointer-events-auto transition-colors duration-300 ${
+                                isDarkMode 
+                                  ? 'bg-gray-600/20 border-gray-500 text-gray-300 hover:bg-gray-600/30' 
+                                  : 'bg-gray-100 border-gray-600 text-gray-800 hover:bg-gray-200'
+                              }`}
                               title="편집"
                             >
                               <Edit3 className="w-3 h-3" />
                             </button>
                             <button
                               onClick={() => handleDeletePatient(patient.id)}
-                              className="p-1 bg-red-600/20 border border-red-500 rounded text-red-300 hover:bg-red-600/30 pointer-events-auto"
+                              className={`p-1 border rounded pointer-events-auto transition-colors duration-300 ${
+                                isDarkMode 
+                                  ? 'bg-red-600/20 border-red-500 text-red-300 hover:bg-red-600/30' 
+                                  : 'bg-red-100 border-red-600 text-red-800 hover:bg-red-200'
+                              }`}
                               title="삭제"
                             >
                               <Trash2 className="w-3 h-3" />
@@ -498,14 +761,24 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
             {!showAddForm ? (
               <button
                 onClick={toggleAddForm}
-                className="w-full p-4 bg-green-900/20 border-2 border-dashed border-green-700/50 rounded-xl text-green-300 hover:bg-green-800/30 hover:border-green-600/70 transition-all flex items-center justify-center gap-2"
+                className={`w-full p-4 border-2 border-dashed rounded-xl transition-all flex items-center justify-center gap-2 ${
+                  isDarkMode 
+                    ? 'bg-green-900/20 border-green-700/50 text-green-300 hover:bg-green-800/30 hover:border-green-600/70' 
+                    : 'bg-green-50 border-green-300 text-green-700 hover:bg-green-100 hover:border-green-400'
+                }`}
               >
                 <Plus className="w-5 h-5" />
                 <span>환자 추가</span>
               </button>
             ) : (
-              <div className="p-4 bg-green-900/20 border-2 border-green-700/50 rounded-xl">
-                <h4 className="text-green-300 font-semibold mb-3">새 환자 추가</h4>
+              <div className={`p-4 border-2 rounded-xl transition-colors duration-300 ${
+                isDarkMode 
+                  ? 'bg-green-900/20 border-green-700/50' 
+                  : 'bg-green-50 border-green-300'
+              }`}>
+                <h4 className={`font-semibold mb-3 transition-colors duration-300 ${
+                  isDarkMode ? 'text-green-300' : 'text-green-700'
+                }`}>새 환자 추가</h4>
                 <div className="space-y-3">
                   <div className="grid grid-cols-2 gap-2">
                     <input
@@ -513,14 +786,22 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
                       placeholder="등록번호 (예: A001)"
                       value={newPatient.number}
                       onChange={(e) => setNewPatient(prev => ({ ...prev, number: e.target.value }))}
-                      className="px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-sm"
+                      className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
+                        isDarkMode 
+                          ? 'bg-gray-800 border-gray-600 text-white' 
+                          : 'bg-white border-gray-300 text-black'
+                      }`}
                     />
                     <input
                       type="text"
                       placeholder="환자명"
                       value={newPatient.name}
                       onChange={(e) => setNewPatient(prev => ({ ...prev, name: e.target.value }))}
-                      className="px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-sm"
+                      className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
+                        isDarkMode 
+                          ? 'bg-gray-800 border-gray-600 text-white' 
+                          : 'bg-white border-gray-300 text-black'
+                      }`}
                     />
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -529,21 +810,46 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
                       placeholder="시술명 (예: Angio 1, PCI, Ablation)"
                       value={newPatient.procedure}
                       onChange={(e) => setNewPatient(prev => ({ ...prev, procedure: e.target.value }))}
-                      className="px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-sm"
+                      className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
+                        isDarkMode 
+                          ? 'bg-gray-800 border-gray-600 text-white' 
+                          : 'bg-white border-gray-300 text-black'
+                      }`}
                     />
                     <input
                       type="text"
                       placeholder="담당의사"
                       value={newPatient.doctor}
                       onChange={(e) => setNewPatient(prev => ({ ...prev, doctor: e.target.value }))}
-                      className="px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-sm"
+                      className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
+                        isDarkMode 
+                          ? 'bg-gray-800 border-gray-600 text-white' 
+                          : 'bg-white border-gray-300 text-black'
+                      }`}
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-2">
+                    <input
+                      type="text"
+                      placeholder="비고 (선택사항)"
+                      value={newPatient.notes}
+                      onChange={(e) => setNewPatient(prev => ({ ...prev, notes: e.target.value }))}
+                      className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
+                        isDarkMode 
+                          ? 'bg-gray-800 border-gray-600 text-white' 
+                          : 'bg-white border-gray-300 text-black'
+                      }`}
                     />
                   </div>
                   <div className="grid grid-cols-1 gap-2">
                     <select
                       value={newPatient.status}
                       onChange={(e) => setNewPatient(prev => ({ ...prev, status: e.target.value }))}
-                      className="px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-sm"
+                      className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
+                        isDarkMode 
+                          ? 'bg-gray-800 border-gray-600 text-white' 
+                          : 'bg-white border-gray-300 text-black'
+                      }`}
                     >
                       <option value="waiting">대기중</option>
                       <option value="procedure">시술중</option>
@@ -553,13 +859,21 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, onUpdat
                   <div className="flex gap-2">
                     <button
                       onClick={handleAddPatient}
-                      className="flex-1 px-4 py-2 bg-green-600/20 border border-green-500 rounded text-green-300 hover:bg-green-600/30 transition-colors"
+                      className={`flex-1 px-4 py-2 border rounded transition-colors duration-300 ${
+                        isDarkMode 
+                          ? 'bg-green-600/20 border-green-500 text-green-300 hover:bg-green-600/30' 
+                          : 'bg-green-600 border-green-600 text-white hover:bg-green-700'
+                      }`}
                     >
                       추가
                     </button>
                     <button
                       onClick={toggleAddForm}
-                      className="flex-1 px-4 py-2 bg-gray-600/20 border border-gray-500 rounded text-gray-300 hover:bg-gray-600/30 transition-colors"
+                      className={`flex-1 px-4 py-2 border rounded transition-colors duration-300 ${
+                        isDarkMode 
+                          ? 'bg-gray-600/20 border-gray-500 text-gray-300 hover:bg-gray-600/30' 
+                          : 'bg-gray-600 border-gray-600 text-white hover:bg-gray-700'
+                      }`}
                     >
                       취소
                     </button>

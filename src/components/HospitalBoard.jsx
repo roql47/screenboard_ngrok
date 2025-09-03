@@ -1,14 +1,22 @@
 import React, { useState, useEffect } from 'react'
-import { Clock, Users, Bell, Settings, Lock, Unlock, Eye, EyeOff } from 'lucide-react'
+import { Clock, Users, Bell, Settings, Lock, Unlock, Eye, EyeOff, LogOut, Sun, Moon } from 'lucide-react'
 import PatientQueue from './PatientQueue'
 import CurrentTime from './CurrentTime'
 import DoctorSchedule from './DoctorStatus'
 import PatientSummary from './PatientSummary'
 import socketManager from '../utils/socket'
 
-const HospitalBoard = () => {
+const HospitalBoard = ({ user, onLogout }) => {
+  console.log('🏥 HospitalBoard 컴포넌트 렌더링 시작:', { user, onLogout: !!onLogout })
+
   const [isAdminMode, setIsAdminMode] = useState(false)
   const [isPrivacyMode, setIsPrivacyMode] = useState(true)
+  const [isDarkMode, setIsDarkMode] = useState(true)
+
+  // 테마 변경 시 body에 data-theme 속성 설정
+  useEffect(() => {
+    document.body.setAttribute('data-theme', isDarkMode ? 'dark' : 'light');
+  }, [isDarkMode]);
   const [patients, setPatients] = useState([])
   const [doctors, setDoctors] = useState([])
   const [stats, setStats] = useState({})
@@ -236,10 +244,15 @@ const HospitalBoard = () => {
 
       socketManager.on('patient_procedure_updated', (data) => {
         console.log('🏥 시술명 실시간 업데이트:', data);
+        // 편집 중인 환자는 업데이트하지 않음 (편집 상태 보존)
         setPatients(prev => {
-          const updated = prev.map(patient => 
-            patient.id === data.patientId ? { ...patient, assigned_doctor: data.newProcedure, procedure: data.newProcedure } : patient
-          );
+          const updated = prev.map(patient => {
+            if (patient.id === data.patientId) {
+              console.log(`📝 환자 ${patient.patient_name} 시술명 실시간 업데이트: ${patient.assigned_doctor} → ${data.newProcedure}`);
+              return { ...patient, assigned_doctor: data.newProcedure, procedure: data.newProcedure };
+            }
+            return patient;
+          });
           console.log('✅ 시술명 로컬 상태 업데이트 완료');
           return updated;
         });
@@ -252,6 +265,17 @@ const HospitalBoard = () => {
             patient.id === data.patientId ? { ...patient, doctor: data.newDoctor } : patient
           );
           console.log('✅ 담당의사 로컬 상태 업데이트 완료');
+          return updated;
+        });
+      });
+
+      socketManager.on('patient_notes_updated', (data) => {
+        console.log('📝 비고 실시간 업데이트:', data);
+        setPatients(prev => {
+          const updated = prev.map(patient => 
+            patient.id === data.patientId ? { ...patient, notes: data.newNotes } : patient
+          );
+          console.log('✅ 비고 로컬 상태 업데이트 완료');
           return updated;
         });
       });
@@ -453,20 +477,8 @@ const HospitalBoard = () => {
       });
       
       // 서버에 실시간 업데이트
-      console.log('📤 서버로 시술명 업데이트 전송:', {
-        type: 'update_patient_procedure',
-        patientId,
-        newProcedure,
-        timestamp: new Date()
-      });
-      
-      socketManager.emit('admin_action', {
-        type: 'update_patient_procedure',
-        patientId,
-        newProcedure,
-        timestamp: new Date()
-      });
-      
+      console.log('📤 서버로 시술명 업데이트 전송');
+      await socketManager.updatePatientProcedure(patientId, newProcedure);
       console.log('🚀 시술명 업데이트 서버 전송 완료');
     } catch (error) {
       console.error('❌ 시술명 업데이트 실패:', error);
@@ -511,6 +523,32 @@ const HospitalBoard = () => {
     }
   };
 
+  const updatePatientNotes = async (patientId, newNotes) => {
+    try {
+      console.log('📝 비고 업데이트 시작:', patientId, newNotes);
+      
+      // 즉시 로컬 상태 업데이트
+      setPatients(prevPatients => {
+        const updated = prevPatients.map(patient => {
+          if (patient.id === patientId) {
+            console.log(`📝 환자 ${patient.patient_name} 비고 변경: "${patient.notes || ''}" → "${newNotes}"`);
+            return { ...patient, notes: newNotes };
+          }
+          return patient;
+        });
+        console.log('✅ 로컬 상태 비고 업데이트 완료');
+        return updated;
+      });
+      
+      // 서버에 실시간 업데이트
+      console.log('📤 서버로 비고 업데이트 전송');
+      await socketManager.updatePatientNotes(patientId, newNotes);
+      console.log('🚀 비고 업데이트 서버 전송 완료');
+    } catch (error) {
+      console.error('❌ 비고 업데이트 실패:', error);
+    }
+  };
+
   const updatePatientStatus = async (patientId, newStatus, assignedDoctor = null) => {
     try {
       console.log('🔄 환자 상태 업데이트:', patientId, newStatus, assignedDoctor);
@@ -519,21 +557,31 @@ const HospitalBoard = () => {
       setPatients(prev => {
         const updated = prev.map(patient => {
           if (patient.id === patientId) {
+            // 기존 시술명 보존 (assigned_doctor와 procedure 둘 다 확인)
+            const currentProcedure = assignedDoctor || patient.assigned_doctor || patient.procedure || '';
+            
             const updatedPatient = { 
               ...patient, 
               status: newStatus, 
-              assigned_doctor: assignedDoctor || patient.assigned_doctor 
+              assigned_doctor: currentProcedure,
+              procedure: currentProcedure // procedure 필드도 함께 업데이트
             };
+            
+            console.log(`📝 환자 ${patient.patient_name} 상태변경: ${patient.status} → ${newStatus}, 시술명="${currentProcedure}" 보존`);
             
             // 시술중으로 변경될 때 대기시간을 0분으로 즉시 설정
             if (newStatus === 'procedure') {
               console.log('🕐 시술중 상태로 변경 - 대기시간 0분으로 초기화');
               updatedPatient.wait_time = 0;
               updatedPatient.waitTime = 0; // 호환성을 위해 둘 다 설정
+              updatedPatient.procedure_start_time = new Date().toISOString(); // 시작시간도 즉시 설정
+              console.log('⏰ 시술 시작시간 설정:', updatedPatient.procedure_start_time);
             } else if (newStatus === 'waiting') {
               console.log('⏸️ 대기중 상태로 변경 - 대기시간 초기화');
               updatedPatient.wait_time = 0;
               updatedPatient.waitTime = 0;
+              updatedPatient.procedure_start_time = null; // 시작시간도 초기화
+              console.log('🔄 시술 시작시간 초기화');
             }
             
             return updatedPatient;
@@ -569,6 +617,7 @@ const HospitalBoard = () => {
         department: patientData.room,
         assigned_doctor: patientData.procedure, // 시술명을 assigned_doctor로 저장
         doctor: patientData.doctor, // 담당의사
+        notes: patientData.notes || '', // 비고
         priority: patientData.priority || 1
       };
       
@@ -580,6 +629,7 @@ const HospitalBoard = () => {
         department: newPatientData.department,
         assigned_doctor: newPatientData.assigned_doctor, // 시술명 저장
         doctor: newPatientData.doctor, // 담당의사 저장
+        notes: newPatientData.notes, // 비고 저장
         priority: newPatientData.priority,
         status: 'waiting',
         wait_time: 0,
@@ -638,6 +688,8 @@ const HospitalBoard = () => {
       console.error('❌ HospitalBoard - 스케줄 업데이트 실패:', error);
     }
   };
+
+
 
   // 환자 방 이동 (드래그 앤 드롭)
   const movePatientToRoom = async (patientId, newRoom) => {
@@ -745,13 +797,48 @@ const HospitalBoard = () => {
     );
   }
 
+  console.log('🎨 HospitalBoard UI 렌더링:', { 
+    error, 
+    patientsCount: patients.length, 
+    doctorsCount: doctors.length,
+    user: user?.username 
+  })
+
   return (
-    <div className="min-h-screen p-3 md:p-6">
+    <div className={`min-h-screen p-3 md:p-6 transition-colors duration-300 ${
+      isDarkMode 
+        ? 'bg-black' 
+        : 'bg-white'
+    }`}>
       <div className="max-w-full mx-auto px-4">
+        {/* 긴급 fallback - 만약 렌더링이 실패하면 기본 UI 표시 */}
+        {!user && (
+          <div className="text-center text-white">
+            <p>사용자 정보를 불러오는 중...</p>
+          </div>
+        )}
         {/* 헤더 */}
         <div className="text-center mb-8 relative">
-          {/* 버튼들 */}
+
+
+          {/* 버튼들 (우측) */}
           <div className="absolute top-0 right-0 flex gap-2">
+            {/* 테마 토글 버튼 */}
+            <button
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className={`
+                p-3 rounded-xl transition-all duration-300
+                ${isDarkMode 
+                  ? 'bg-yellow-600/20 border-yellow-500 text-yellow-300 hover:bg-yellow-600/30' 
+                  : 'bg-gray-600/20 border-gray-500 text-gray-300 hover:bg-gray-600/30'
+                }
+                border-2 backdrop-blur-md
+              `}
+              title={isDarkMode ? "라이트 모드" : "다크 모드"}
+            >
+              {isDarkMode ? <Sun className="w-6 h-6" /> : <Moon className="w-6 h-6" />}
+            </button>
+
             {/* 개인정보 보호 토글 버튼 */}
             <button
               onClick={() => setIsPrivacyMode(!isPrivacyMode)}
@@ -783,15 +870,26 @@ const HospitalBoard = () => {
             >
               {isAdminMode ? <Unlock className="w-6 h-6" /> : <Lock className="w-6 h-6" />}
             </button>
+
+            {/* 로그아웃 버튼 */}
+            <button
+              onClick={onLogout}
+              className="p-3 rounded-xl transition-all duration-300 bg-red-600/20 border-2 border-red-500 text-red-300 hover:bg-red-600/30 backdrop-blur-md"
+              title="로그아웃"
+            >
+              <LogOut className="w-6 h-6" />
+            </button>
           </div>
 
           <div className="flex items-center justify-center gap-4 mb-4">
-            <h1 className="text-4xl md:text-6xl font-bold text-white">
+            <h1 className={`text-4xl md:text-6xl font-bold transition-colors duration-300 ${
+              isDarkMode ? 'text-white' : 'text-black'
+            }`}>
               심장뇌혈관 시술센터 전광판
             </h1>
           </div>
-          
-          <CurrentTime />
+
+          <CurrentTime isDarkMode={isDarkMode} />
         </div>
 
         {/* 메인 콘텐츠 */}
@@ -807,11 +905,13 @@ const HospitalBoard = () => {
                   roomTitle="Angio 1R"
                   isAdminMode={isAdminMode}
                   isPrivacyMode={isPrivacyMode}
+                  isDarkMode={isDarkMode}
                   onUpdatePatientName={updatePatientName}
                   onUpdatePatientNumber={updatePatientNumber}
                   onUpdatePatientStatus={updatePatientStatus}
                   onUpdatePatientProcedure={updatePatientProcedure}
                   onUpdatePatientDoctor={updatePatientDoctor}
+                  onUpdatePatientNotes={updatePatientNotes}
                   onAddPatient={addPatient}
                   onDeletePatient={deletePatient}
                   onMovePatientToRoom={movePatientToRoom}
@@ -825,11 +925,13 @@ const HospitalBoard = () => {
                   roomTitle="Angio 2R"
                   isAdminMode={isAdminMode}
                   isPrivacyMode={isPrivacyMode}
+                  isDarkMode={isDarkMode}
                   onUpdatePatientName={updatePatientName}
                   onUpdatePatientNumber={updatePatientNumber}
                   onUpdatePatientStatus={updatePatientStatus}
                   onUpdatePatientProcedure={updatePatientProcedure}
                   onUpdatePatientDoctor={updatePatientDoctor}
+                  onUpdatePatientNotes={updatePatientNotes}
                   onAddPatient={addPatient}
                   onDeletePatient={deletePatient}
                   onMovePatientToRoom={movePatientToRoom}
@@ -843,11 +945,13 @@ const HospitalBoard = () => {
                   roomTitle="Hybrid Room"
                   isAdminMode={isAdminMode}
                   isPrivacyMode={isPrivacyMode}
+                  isDarkMode={isDarkMode}
                   onUpdatePatientName={updatePatientName}
                   onUpdatePatientNumber={updatePatientNumber}
                   onUpdatePatientStatus={updatePatientStatus}
                   onUpdatePatientProcedure={updatePatientProcedure}
                   onUpdatePatientDoctor={updatePatientDoctor}
+                  onUpdatePatientNotes={updatePatientNotes}
                   onAddPatient={addPatient}
                   onDeletePatient={deletePatient}
                   onMovePatientToRoom={movePatientToRoom}
@@ -863,13 +967,14 @@ const HospitalBoard = () => {
                 schedule={schedule}
                 onUpdateDoctorStatus={updateDoctorStatus}
                 onUpdateSchedule={updateSchedule}
+                isDarkMode={isDarkMode}
               />
             </div>
           </div>
 
           {/* 사이드바 - 환자 요약 */}
           <div className="xl:col-span-2">
-            <PatientSummary patients={patients} isPrivacyMode={isPrivacyMode} />
+            <PatientSummary patients={patients} isPrivacyMode={isPrivacyMode} isAdminMode={isAdminMode} isDarkMode={isDarkMode} />
           </div>
         </div>
       </div>

@@ -11,9 +11,10 @@ const io = socketIo(server, {
   cors: {
     origin: [
       "http://localhost:5173", 
-      "https://4a2021e0c8f0.ngrok-free.app", // 현재 프론트엔드 ngrok URL
-      "https://d606ec20e07d.ngrok-free.app", // 현재 백엔드 ngrok URL
+      "https://9d45ee3c6609.ngrok.app", // 현재 프론트엔드 ngrok URL
+      "https://b62c635d9f86.ngrok.app", // 현재 백엔드 ngrok URL
       /^https:\/\/.*\.ngrok-free\.app$/,
+      /^https:\/\/.*\.ngrok\.app$/,
       /^https:\/\/.*\.loca\.lt$/
     ],
     methods: ["GET", "POST"],
@@ -30,9 +31,10 @@ const io = socketIo(server, {
 app.use(cors({
   origin: [
     "http://localhost:5173",
-    "https://4a2021e0c8f0.ngrok-free.app", // 현재 프론트엔드 ngrok URL
-    "https://d606ec20e07d.ngrok-free.app", // 현재 백엔드 ngrok URL
+    "https://9d45ee3c6609.ngrok.app", // 현재 프론트엔드 ngrok URL
+    "https://b62c635d9f86.ngrok.app", // 현재 백엔드 ngrok URL
     /^https:\/\/.*\.ngrok-free\.app$/,
+    /^https:\/\/.*\.ngrok\.app$/,
     /^https:\/\/.*\.loca\.lt$/
   ],
   credentials: true
@@ -66,6 +68,7 @@ db.serialize(() => {
     assigned_doctor TEXT,
     wait_time INTEGER DEFAULT 0,
     procedure_start_time DATETIME,
+    notes TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
@@ -91,6 +94,14 @@ db.serialize(() => {
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
+  // 당직 의료진 테이블
+  db.run(`CREATE TABLE IF NOT EXISTS duty_staff (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    staff_type TEXT NOT NULL UNIQUE,
+    staff_name TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
   // 초기 데이터 삽입
   db.get("SELECT COUNT(*) as count FROM doctors", (err, row) => {
     if (row.count === 0) {
@@ -107,6 +118,15 @@ db.serialize(() => {
         stmt.run(doctor);
       });
       stmt.finalize();
+    }
+  });
+
+  // 기존 테이블에 비고 필드 추가 (마이그레이션)
+  db.run(`ALTER TABLE patient_queue ADD COLUMN notes TEXT DEFAULT ''`, (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.log('비고 필드 추가 중 오류 (이미 존재할 수 있음):', err.message);
+    } else if (!err) {
+      console.log('✅ patient_queue 테이블에 비고(notes) 필드 추가 완료');
     }
   });
 
@@ -175,6 +195,24 @@ db.serialize(() => {
       });
       stmt.finalize();
       console.log('초기 외래 진료 스케줄 데이터 삽입 완료');
+    }
+  });
+
+  // 초기 당직 의료진 데이터
+  db.get("SELECT COUNT(*) as count FROM duty_staff", (err, row) => {
+    if (row.count === 0) {
+      const dutyData = [
+        ['Doctor', '김교수'],
+        ['RN', '박간호사'],
+        ['RT', '이방사선사']
+      ];
+
+      const stmt = db.prepare("INSERT INTO duty_staff (staff_type, staff_name) VALUES (?, ?)");
+      dutyData.forEach(duty => {
+        stmt.run(duty);
+      });
+      stmt.finalize();
+      console.log('초기 당직 의료진 데이터 삽입 완료');
     }
   });
 
@@ -388,6 +426,57 @@ app.post('/api/doctors/:id/status', (req, res) => {
   );
 });
 
+// 당직 의료진 조회
+app.get('/api/duty', (req, res) => {
+  db.all("SELECT * FROM duty_staff ORDER BY staff_type", (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    
+    // 데이터를 프론트엔드 형식으로 변환
+    const dutyStaff = {};
+    rows.forEach(row => {
+      dutyStaff[row.staff_type] = row.staff_name;
+    });
+    
+    res.json(dutyStaff);
+  });
+});
+
+// 당직 의료진 업데이트
+app.post('/api/duty', (req, res) => {
+  const { dutyStaff } = req.body;
+  
+  if (!dutyStaff) {
+    return res.status(400).json({ error: 'Duty staff data is required' });
+  }
+  
+  console.log('🔥 당직 의료진 업데이트 요청:', dutyStaff);
+  
+  const stmt = db.prepare("INSERT OR REPLACE INTO duty_staff (staff_type, staff_name, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)");
+  
+  try {
+    Object.keys(dutyStaff).forEach(staffType => {
+      const staffName = dutyStaff[staffType];
+      if (staffName && staffName.trim()) {
+        stmt.run([staffType, staffName.trim()]);
+        console.log(`✅ 당직 업데이트: ${staffType} = ${staffName.trim()}`);
+      }
+    });
+    
+    stmt.finalize();
+    
+    console.log('📡 당직 의료진 업데이트 브로드캐스트');
+    io.emit('duty_updated', dutyStaff);
+    
+    res.json({ success: true, dutyStaff });
+  } catch (error) {
+    console.error('❌ 당직 의료진 업데이트 실패:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 환자 상태 업데이트
 app.post('/api/patients/:id/status', (req, res) => {
   const { id } = req.params;
@@ -396,18 +485,68 @@ app.post('/api/patients/:id/status', (req, res) => {
   // 시술중으로 변경될 때 시작 시간 기록
   let updateQuery, updateParams;
   if (status === 'procedure') {
-    console.log(`🕐 환자 ${id} 시술중 상태로 변경 - 시간 0분으로 초기화`);
-    updateQuery = "UPDATE patient_queue SET status = ?, assigned_doctor = ?, procedure_start_time = CURRENT_TIMESTAMP, wait_time = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
-    updateParams = [status, assigned_doctor, id];
+    console.log(`🕐 환자 ${id} 시술중 상태로 변경 - 시간 0분으로 강제 초기화`);
+    
+    // 한국시간으로 현재 시간 생성
+    const koreanTime = new Date().toLocaleString('sv-SE', {timeZone: 'Asia/Seoul'});
+    console.log(`🕐 새로운 시작시간 설정: ${koreanTime} (한국시간)`);
+    
+    // 강제로 wait_time을 0으로 설정하고 시작시간을 한국시간으로 완전히 재설정
+    updateQuery = "UPDATE patient_queue SET status = ?, assigned_doctor = ?, procedure_start_time = ?, wait_time = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    updateParams = [status, assigned_doctor, koreanTime, id];
+    
+    console.log(`🔥 환자 ${id} 데이터베이스 시술시간 강제 초기화 실행`);
+    
+    // 추가: 즉시 클라이언트에게 0분으로 브로드캐스트
+    setTimeout(() => {
+      console.log(`📡 환자 ${id} 시술시간 0분 브로드캐스트`);
+      io.emit('patient_updated', { 
+        id: parseInt(id), 
+        status: status, 
+        assigned_doctor: assigned_doctor,
+        wait_time: 0,
+        procedure_start_time: koreanTime
+      });
+    }, 100);
+    
   } else if (status === 'waiting') {
     // 대기중으로 변경될 때 시작 시간 초기화
-    console.log(`⏸️ 환자 ${id} 대기중 상태로 변경 - 시술 시간 초기화`);
+    console.log(`⏸️ 환자 ${id} 대기중 상태로 변경 - 시술 시간 완전 초기화`);
     updateQuery = "UPDATE patient_queue SET status = ?, assigned_doctor = ?, procedure_start_time = NULL, wait_time = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
     updateParams = [status, assigned_doctor, id];
+    
+    // 추가: 즉시 클라이언트에게 초기화 브로드캐스트
+    setTimeout(() => {
+      console.log(`📡 환자 ${id} 대기시간 0분 브로드캐스트`);
+      io.emit('patient_updated', { 
+        id: parseInt(id), 
+        status: status, 
+        assigned_doctor: assigned_doctor,
+        wait_time: 0,
+        procedure_start_time: null
+      });
+    }, 100);
+  } else if (status === 'completed') {
+    // 완료로 변경될 때도 시작 시간 초기화
+    console.log(`✅ 환자 ${id} 완료 상태로 변경 - 시술 시간 초기화`);
+    updateQuery = "UPDATE patient_queue SET status = ?, assigned_doctor = ?, procedure_start_time = NULL, wait_time = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    updateParams = [status, assigned_doctor, id];
+    
+    // 추가: 즉시 클라이언트에게 초기화 브로드캐스트
+    setTimeout(() => {
+      console.log(`📡 환자 ${id} 완료 - 시술시간 초기화 브로드캐스트`);
+      io.emit('patient_updated', { 
+        id: parseInt(id), 
+        status: status, 
+        assigned_doctor: assigned_doctor,
+        wait_time: 0,
+        procedure_start_time: null
+      });
+    }, 100);
   } else {
-    // 완료 등 다른 상태
+    // 기타 다른 상태
     console.log(`📝 환자 ${id} 상태 변경: ${status}`);
-    updateQuery = "UPDATE patient_queue SET status = ?, assigned_doctor = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    updateQuery = "UPDATE patient_queue SET status = ?, assigned_doctor = ?, procedure_start_time = NULL, wait_time = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
     updateParams = [status, assigned_doctor, id];
   }
   
@@ -458,9 +597,9 @@ app.post('/api/patients/:id/status', (req, res) => {
 
 // 새 환자 추가
 app.post('/api/patients', (req, res) => {
-  const { patient_name, patient_id, department, assigned_doctor, doctor, priority } = req.body;
+  const { patient_name, patient_id, department, assigned_doctor, doctor, priority, notes } = req.body;
   
-  console.log('🆕 새 환자 추가 요청:', { patient_name, patient_id, department, assigned_doctor, doctor, priority });
+  console.log('🆕 새 환자 추가 요청:', { patient_name, patient_id, department, assigned_doctor, doctor, priority, notes });
   
   // 중복 확인
   db.get(
@@ -480,8 +619,8 @@ app.post('/api/patients', (req, res) => {
       
       // 새 환자 추가
       db.run(
-        "INSERT INTO patient_queue (patient_name, patient_id, department, assigned_doctor, doctor, priority) VALUES (?, ?, ?, ?, ?, ?)",
-        [patient_name, patient_id, department, assigned_doctor, doctor, priority || 1],
+        "INSERT INTO patient_queue (patient_name, patient_id, department, assigned_doctor, doctor, priority, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [patient_name, patient_id, department, assigned_doctor, doctor, priority || 1, notes || ''],
         function(err) {
           if (err) {
             res.status(500).json({ error: err.message });
@@ -579,17 +718,51 @@ function updateProcedureWaitTimes() {
     }
     
     patients.forEach(patient => {
-      const startTime = new Date(patient.procedure_start_time);
-      const currentTime = new Date();
+      // 시간대 문제 완전 해결: 둘 다 문자열로 직접 계산
+      const startTimeStr = patient.procedure_start_time; // '2025-08-25 07:05:40'
+      const currentTimeStr = new Date().toLocaleString('sv-SE', {timeZone: 'Asia/Seoul'}); // '2025-08-25 07:06:40'
+      
+      console.log(`🔍 환자 ${patient.id} 시술시간 계산 (한국시간 직접계산):`);
+      console.log(`   시작시간: ${startTimeStr} (한국시간)`);
+      console.log(`   현재시간: ${currentTimeStr} (한국시간)`);
+      
+      // Date 객체 사용하지 않고 직접 시간 계산
+      const parseDateTime = (dateTimeStr) => {
+        // '2025-08-25 07:10:06' -> [2025, 8, 25, 7, 10, 6]
+        const [datePart, timePart] = dateTimeStr.split(' ');
+        const [year, month, day] = datePart.split('-').map(Number);
+        const [hour, minute, second] = timePart.split(':').map(Number);
+        
+        // 월은 0부터 시작하므로 -1
+        return new Date(year, month - 1, day, hour, minute, second);
+      };
+      
+      const startTime = parseDateTime(startTimeStr);
+      const currentTime = parseDateTime(currentTimeStr);
+      
       const waitTimeMinutes = Math.floor((currentTime - startTime) / (1000 * 60));
       
-      // 대기시간 업데이트
+      console.log(`   시작 Date: ${startTime.toISOString()} (로컬시간 기준)`);
+      console.log(`   현재 Date: ${currentTime.toISOString()} (로컬시간 기준)`);
+      console.log(`   시간 차이: ${(currentTime - startTime) / (1000 * 60)} 분`);
+      console.log(`   계산된 시간: ${waitTimeMinutes}분`);
+      
+      // 정상적인 대기시간 업데이트 (비정상 검증 제거)
+      console.log(`⏰ 환자 ${patient.id} 시술시간 업데이트: ${waitTimeMinutes}분`);
+      
       db.run(
         "UPDATE patient_queue SET wait_time = ? WHERE id = ?",
         [waitTimeMinutes, patient.id],
         function(err) {
           if (err) {
             console.error('대기시간 업데이트 실패:', err);
+          } else {
+            console.log(`✅ 환자 ${patient.id} 시술시간 ${waitTimeMinutes}분으로 업데이트 완료`);
+            // 업데이트된 환자 정보를 모든 클라이언트에게 브로드캐스트
+            io.emit('patient_updated', {
+              id: patient.id,
+              wait_time: waitTimeMinutes
+            });
           }
         }
       );
@@ -604,8 +777,9 @@ function updateProcedureWaitTimes() {
   });
 }
 
-// 1분마다 시술중 환자들의 대기시간 업데이트
-setInterval(updateProcedureWaitTimes, 60000); // 60초마다 실행
+// 시술중 환자들의 대기시간 업데이트 (테스트용: 10초마다)
+console.log('⏰ 시술시간 업데이트 타이머 시작 (10초마다)');
+setInterval(updateProcedureWaitTimes, 10000); // 10초마다 실행 (테스트용)
 
 // 연결된 클라이언트 관리
 const connectedClients = new Map();
@@ -647,6 +821,41 @@ io.on('connection', (socket) => {
   // 스케줄 브로드캐스트 이벤트 처리
   socket.on('schedule_broadcast', (data) => {
     console.log('📅 스케줄 브로드캐스트 수신:', data);
+    
+    // 데이터베이스에 스케줄 저장
+    if (data.schedule) {
+      console.log('💾 스케줄 데이터베이스 저장 시작');
+      
+      // 기존 스케줄 데이터 삭제 후 새로 삽입
+      db.run("DELETE FROM doctor_schedule", (err) => {
+        if (err) {
+          console.error('❌ 기존 스케줄 삭제 실패:', err.message);
+          return;
+        }
+        
+        const stmt = db.prepare("INSERT INTO doctor_schedule (day_of_week, time_period, doctor_name, position_index) VALUES (?, ?, ?, ?)");
+        
+        try {
+          Object.keys(data.schedule).forEach(day => {
+            Object.keys(data.schedule[day]).forEach(time => {
+              data.schedule[day][time].forEach((doctorName, index) => {
+                if (doctorName && doctorName.trim()) {
+                  stmt.run([day, time, doctorName.trim(), index]);
+                  console.log(`✅ 스케줄 저장: ${day} ${time} ${doctorName.trim()}`);
+                }
+              });
+            });
+          });
+          
+          stmt.finalize();
+          console.log('✅ 스케줄 데이터베이스 저장 완료');
+          
+        } catch (error) {
+          console.error('❌ 스케줄 저장 중 오류:', error);
+        }
+      });
+    }
+    
     console.log('📡 모든 클라이언트에게 스케줄 업데이트 전송');
     
     // 모든 클라이언트에게 스케줄 업데이트 전송
@@ -840,6 +1049,59 @@ io.on('connection', (socket) => {
           }
         );
       });
+    } else if (data.type === 'update_patient_notes') {
+      console.log(`📝 비고 업데이트 요청 받음: 환자ID=${data.patientId}, 새비고="${data.newNotes}"`);
+      
+      // 먼저 기존 환자 정보 확인
+      db.get("SELECT * FROM patient_queue WHERE id = ?", [data.patientId], (err, patient) => {
+        if (err) {
+          console.error('환자 조회 실패:', err);
+          return;
+        }
+        
+        if (!patient) {
+          console.error('환자를 찾을 수 없음:', data.patientId);
+          return;
+        }
+        
+        console.log(`📋 기존 환자 정보: ${patient.patient_name}, 기존 비고="${patient.notes || ''}"`);
+        
+        // 데이터베이스 업데이트
+        db.run(
+          "UPDATE patient_queue SET notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [data.newNotes, data.patientId],
+          function(err) {
+            if (err) {
+              console.error('❌ 비고 데이터베이스 업데이트 실패:', err);
+              return;
+            }
+            
+            console.log(`✅ 비고 데이터베이스 업데이트 성공: ${patient.patient_name} → "${data.newNotes}"`);
+            console.log(`📊 영향받은 행 수: ${this.changes}`);
+            
+            // 업데이트된 환자 정보 다시 조회
+            db.get("SELECT * FROM patient_queue WHERE id = ?", [data.patientId], (err, updatedPatient) => {
+              if (!err && updatedPatient) {
+                console.log(`🔍 업데이트 확인: ${updatedPatient.patient_name}, 비고="${updatedPatient.notes || ''}"`);
+              }
+            });
+            
+            // 모든 클라이언트에게 비고 업데이트 전송
+            io.emit('patient_notes_updated', {
+              patientId: data.patientId,
+              newNotes: data.newNotes
+            });
+            
+            // 전체 환자 목록도 다시 전송하여 확실한 동기화
+            db.all("SELECT * FROM patient_queue ORDER BY created_at", (err, allPatients) => {
+              if (!err) {
+                console.log(`📤 전체 환자 목록 재전송 (${allPatients.length}명)`);
+                io.emit('patients_data', allPatients);
+              }
+            });
+          }
+        );
+      });
     }
   });
 
@@ -893,10 +1155,144 @@ setInterval(() => {
   updateHospitalStats();
 }, 30000);
 
+// 로그인 API
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body
+  console.log('🔐 로그인 시도:', username)
+  
+  // 기본 계정 정보
+  const accounts = {
+    'cauhs': { password: 'cauhs19415', role: 'admin', name: '관리자' }
+  }
+  
+  if (!username || !password) {
+    console.log('❌ 로그인 실패: 사용자명 또는 비밀번호 누락')
+    return res.status(400).json({ 
+      success: false, 
+      message: '사용자명과 비밀번호를 입력해주세요.' 
+    })
+  }
+  
+  const account = accounts[username]
+  
+  if (!account || account.password !== password) {
+    console.log('❌ 로그인 실패: 잘못된 계정 정보')
+    return res.status(401).json({ 
+      success: false, 
+      message: '사용자명 또는 비밀번호가 올바르지 않습니다.' 
+    })
+  }
+  
+  console.log('✅ 로그인 성공:', username, '역할:', account.role)
+  
+  // 간단한 토큰 생성 (실제 환경에서는 JWT 사용 권장)
+  const token = Buffer.from(`${username}:${account.role}:${Date.now()}`).toString('base64')
+  
+  res.json({
+    success: true,
+    message: '로그인 성공',
+    user: {
+      username: username,
+      role: account.role,
+      name: account.name
+    },
+    token: token
+  })
+})
+
+// 토큰 검증 API
+app.post('/api/verify-token', (req, res) => {
+  const { token } = req.body
+  
+  if (!token) {
+    return res.status(400).json({ 
+      success: false, 
+      message: '토큰이 필요합니다.' 
+    })
+  }
+  
+  try {
+    const decoded = Buffer.from(token, 'base64').toString()
+    const [username, role, timestamp] = decoded.split(':')
+    
+    // 토큰 유효성 검사 (24시간)
+    const tokenAge = Date.now() - parseInt(timestamp)
+    const maxAge = 24 * 60 * 60 * 1000 // 24시간
+    
+    if (tokenAge > maxAge) {
+      console.log('❌ 토큰 만료:', username)
+      return res.status(401).json({ 
+        success: false, 
+        message: '토큰이 만료되었습니다.' 
+      })
+    }
+    
+    console.log('✅ 토큰 검증 성공:', username)
+    
+    const accounts = {
+      'cauhs': { name: '관리자' }
+    }
+    
+    res.json({
+      success: true,
+      user: {
+        username: username,
+        role: role,
+        name: accounts[username]?.name || username
+      }
+    })
+    
+  } catch (error) {
+    console.log('❌ 토큰 검증 실패:', error.message)
+    res.status(401).json({ 
+      success: false, 
+      message: '유효하지 않은 토큰입니다.' 
+    })
+  }
+})
+
+// 서버 시작 시 모든 환자의 시술 시간 강제 초기화
+function resetAllProcedureTimes() {
+  console.log('🔄 서버 시작 - 모든 환자 시술시간 강제 초기화 중...');
+  
+  // 모든 환자의 시술시간을 완전히 초기화
+  db.run(`
+    UPDATE patient_queue 
+    SET procedure_start_time = CASE 
+      WHEN status = 'procedure' THEN CURRENT_TIMESTAMP 
+      ELSE NULL 
+    END, 
+    wait_time = 0
+  `, (err) => {
+    if (err) {
+      console.error('❌ 시술시간 초기화 실패:', err);
+    } else {
+      console.log('✅ 모든 환자의 시술시간 강제 초기화 완료');
+      console.log('   - 시술중 환자: 현재 시간으로 설정');
+      console.log('   - 기타 환자: 시술시간 제거');
+      
+      // 모든 클라이언트에게 초기화 알림
+      setTimeout(() => {
+        db.all("SELECT * FROM patient_queue ORDER BY created_at", (err, allPatients) => {
+          if (!err) {
+            console.log('📡 초기화된 환자 데이터 브로드캐스트');
+            io.emit('patients_data', allPatients);
+          }
+        });
+      }, 1000);
+    }
+  });
+}
+
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`서버가 포트 ${PORT}에서 실행 중입니다`);
-  console.log(`API 엔드포인트: http://localhost:${PORT}/api`);
+  console.log(`🚀 서버가 포트 ${PORT}에서 실행 중입니다`);
+  console.log(`📡 API 엔드포인트: http://localhost:${PORT}/api`);
+  console.log(`🔐 로그인 기능이 활성화되었습니다`);
+  console.log(`   - 관리자: cauhs / cauhs19415`);
+  
+  // 서버 시작 시 시술시간 초기화 실행
+  setTimeout(resetAllProcedureTimes, 1000);
 });
 
 module.exports = { app, server, db };

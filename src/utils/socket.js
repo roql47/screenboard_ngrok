@@ -13,7 +13,7 @@ const getServerURL = () => {
     const backendUrl = currentUrl.replace(':5173', ':3001').replace(/:\d+/, '') + ':3001';
     
     // ngrok 백엔드 터널 URL
-    const ngrokBackendUrl = 'https://d606ec20e07d.ngrok-free.app';
+    const ngrokBackendUrl = 'https://b62c635d9f86.ngrok.app';
     
     console.log('🌐 백엔드 서버 URL (ngrok):', ngrokBackendUrl);
     return ngrokBackendUrl;
@@ -284,6 +284,46 @@ class SocketManager {
     }
   }
 
+  async updatePatientProcedure(patientId, newProcedure) {
+    try {
+      console.log('🏥 API 호출: 시술명 업데이트', { patientId, newProcedure });
+      
+      // 백엔드에는 Socket.IO를 통해 전송 (기존 방식 유지)
+      this.emit('admin_action', {
+        type: 'update_patient_procedure',
+        patientId,
+        newProcedure,
+        timestamp: new Date()
+      });
+      
+      console.log('✅ 시술명 업데이트 전송 완료');
+      return { success: true };
+    } catch (error) {
+      console.error('시술명 업데이트 실패:', error);
+      throw error;
+    }
+  }
+
+  async updatePatientNotes(patientId, newNotes) {
+    try {
+      console.log('📝 API 호출: 비고 업데이트', { patientId, newNotes });
+      
+      // 백엔드에는 Socket.IO를 통해 전송
+      this.emit('admin_action', {
+        type: 'update_patient_notes',
+        patientId,
+        newNotes,
+        timestamp: new Date()
+      });
+      
+      console.log('✅ 비고 업데이트 전송 완료');
+      return { success: true };
+    } catch (error) {
+      console.error('비고 업데이트 실패:', error);
+      throw error;
+    }
+  }
+
   async fetchSchedule() {
     try {
       console.log('📅 스케줄 데이터 요청 URL:', `${SERVER_URL}/api/schedule`);
@@ -332,6 +372,112 @@ class SocketManager {
 }
 
 // 싱글톤 인스턴스 생성
+// 로그인 API
+export const login = async (credentials) => {
+  try {
+    console.log('🔐 로그인 요청 시작:', `${getServerURL()}/api/login`)
+    
+    const response = await fetch(`${getServerURL()}/api/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(credentials),
+    })
+    
+    console.log('📡 응답 상태:', response.status, response.statusText)
+    console.log('📡 응답 헤더:', response.headers.get('content-type'))
+    
+    // HTML 응답인지 확인
+    const contentType = response.headers.get('content-type')
+    if (!contentType || !contentType.includes('application/json')) {
+      const textResponse = await response.text()
+      console.error('❌ HTML 응답 수신:', textResponse.substring(0, 200))
+      throw new Error('서버에서 HTML을 반환했습니다. 백엔드 서버가 실행 중인지 확인하세요.')
+    }
+    
+    const data = await response.json()
+    
+    if (!response.ok) {
+      throw new Error(data.message || '로그인 실패')
+    }
+    
+    return data
+  } catch (error) {
+    console.error('🔥 로그인 API 오류:', error)
+    throw error
+  }
+}
+
+// 토큰 검증 API
+export const verifyToken = async (token) => {
+  const response = await fetch(`${getServerURL()}/api/verify-token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'ngrok-skip-browser-warning': 'true'
+    },
+    body: JSON.stringify({ token }),
+  })
+  
+  const data = await response.json()
+  
+  if (!response.ok) {
+    throw new Error(data.message || '토큰 검증 실패')
+  }
+  
+  return data
+}
+
+// 당직 의료진 조회 API
+export const fetchDutyStaff = async () => {
+  try {
+    const response = await fetch(`${getServerURL()}/api/duty`, {
+      headers: {
+        'ngrok-skip-browser-warning': 'true'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    console.log('✅ 당직 의료진 조회 성공:', data);
+    return data;
+  } catch (error) {
+    console.error('❌ 당직 의료진 조회 실패:', error);
+    throw error;
+  }
+}
+
+// 당직 의료진 업데이트 API
+export const updateDutyStaff = async (dutyStaff) => {
+  try {
+    const response = await fetch(`${getServerURL()}/api/duty`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true'
+      },
+      body: JSON.stringify({ dutyStaff }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log('✅ 당직 의료진 업데이트 성공:', data);
+    return data;
+  } catch (error) {
+    console.error('❌ 당직 의료진 업데이트 실패:', error);
+    throw error;
+  }
+}
+
 const socketManager = new SocketManager();
 
 export default socketManager;

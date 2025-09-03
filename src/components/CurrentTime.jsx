@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Clock } from 'lucide-react'
 
-const CurrentTime = () => {
+const CurrentTime = ({ isDarkMode }) => {
   const [currentTime, setCurrentTime] = useState(new Date())
 
   useEffect(() => {
@@ -31,7 +31,9 @@ const CurrentTime = () => {
   }
 
   return (
-    <div className="flex items-center justify-center gap-4 text-white">
+    <div className={`flex items-center justify-center gap-4 transition-colors duration-300 ${
+      isDarkMode ? 'text-white' : 'text-black'
+    }`}>
       <Clock className="w-8 h-8 text-blue-400" />
       <div className="text-center">
         <div className="text-4xl font-bold digital-font mb-1">
