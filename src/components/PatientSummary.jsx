@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Users, Clock, CheckCircle, AlertCircle, Edit3, Check, X } from 'lucide-react'
 import socketManager, { fetchDutyStaff, updateDutyStaff } from '../utils/socket'
 
-const PatientSummary = ({ patients, isPrivacyMode, isAdminMode, isDarkMode }) => {
+const PatientSummary = ({ patients, isPrivacyMode, isAdminMode, isDarkMode, onMovePatientToRoom }) => {
   // 당직 정보 상태 관리
   const [dutyStaff, setDutyStaff] = useState({
     Doctor: '김교수',
@@ -210,7 +210,7 @@ const PatientSummary = ({ patients, isPrivacyMode, isAdminMode, isDarkMode }) =>
         </div>
         
         <div className="space-y-2 max-h-64 overflow-y-auto">
-          {completedPatients.length > 0 && (
+          {completedPatients.length > 0 ? (
             completedPatients
               .sort((a, b) => b.id - a.id) // 최근 완료 순서
               .map((patient) => (
@@ -237,17 +237,68 @@ const PatientSummary = ({ patients, isPrivacyMode, isAdminMode, isDarkMode }) =>
                         )}
                       </div>
                     </div>
-                    <div className={`text-sm flex items-center gap-1 transition-colors duration-300 ${
-                      isDarkMode ? 'text-green-300' : 'text-black'
-                    }`}>
-                      <CheckCircle className={`w-4 h-4 transition-colors duration-300 ${
-                        isDarkMode ? 'text-green-400' : 'text-black'
-                      }`} />
-                      완료
+                    <div className="flex items-center gap-2">
+                      <div className={`text-sm flex items-center gap-1 transition-colors duration-300 ${
+                        isDarkMode ? 'text-green-300' : 'text-black'
+                      }`}>
+                        <CheckCircle className={`w-4 h-4 transition-colors duration-300 ${
+                          isDarkMode ? 'text-green-400' : 'text-black'
+                        }`} />
+                        완료
+                      </div>
+                      {isAdminMode && onMovePatientToRoom && (
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => onMovePatientToRoom(patient.id, 'Angio 1R')}
+                            className={`px-2 py-1 text-xs rounded transition-colors duration-300 ${
+                              isDarkMode 
+                                ? 'bg-blue-600/20 border border-blue-500/30 text-blue-300 hover:bg-blue-600/30' 
+                                : 'bg-blue-100 border border-blue-300 text-blue-700 hover:bg-blue-200'
+                            }`}
+                            title="Angio 1R로 이동"
+                          >
+                            1R
+                          </button>
+                          <button
+                            onClick={() => onMovePatientToRoom(patient.id, 'Angio 2R')}
+                            className={`px-2 py-1 text-xs rounded transition-colors duration-300 ${
+                              isDarkMode 
+                                ? 'bg-blue-600/20 border border-blue-500/30 text-blue-300 hover:bg-blue-600/30' 
+                                : 'bg-blue-100 border border-blue-300 text-blue-700 hover:bg-blue-200'
+                            }`}
+                            title="Angio 2R로 이동"
+                          >
+                            2R
+                          </button>
+                          <button
+                            onClick={() => onMovePatientToRoom(patient.id, 'Hybrid Room')}
+                            className={`px-2 py-1 text-xs rounded transition-colors duration-300 ${
+                              isDarkMode 
+                                ? 'bg-purple-600/20 border border-purple-500/30 text-purple-300 hover:bg-purple-600/30' 
+                                : 'bg-purple-100 border border-purple-300 text-purple-700 hover:bg-purple-200'
+                            }`}
+                            title="Hybrid Room으로 이동"
+                          >
+                            HR
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
               ))
+          ) : (
+            <div className={`p-4 text-center transition-colors duration-300 ${
+              isDarkMode ? 'text-gray-400' : 'text-gray-500'
+            }`}>
+              <CheckCircle className={`w-8 h-8 mx-auto mb-2 transition-colors duration-300 ${
+                isDarkMode ? 'text-gray-600' : 'text-gray-400'
+              }`} />
+              <p className="text-sm">완료된 환자가 없습니다</p>
+              {isAdminMode && (
+                <p className="text-xs mt-1 opacity-70">환자를 '완료' 상태로 변경하면 여기에 표시됩니다</p>
+              )}
+            </div>
           )}
         </div>
       </div>

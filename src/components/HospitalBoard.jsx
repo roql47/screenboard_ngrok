@@ -280,6 +280,28 @@ const HospitalBoard = ({ user, onLogout }) => {
         });
       });
 
+      socketManager.on('patient_gender_age_updated', (data) => {
+        console.log('👤 성별/나이 실시간 업데이트:', data);
+        setPatients(prev => {
+          const updated = prev.map(patient => 
+            patient.id === data.patientId ? { ...patient, gender_age: data.newGenderAge } : patient
+          );
+          console.log('✅ 성별/나이 로컬 상태 업데이트 완료');
+          return updated;
+        });
+      });
+
+      socketManager.on('patient_ward_updated', (data) => {
+        console.log('🏥 병동 실시간 업데이트:', data);
+        setPatients(prev => {
+          const updated = prev.map(patient => 
+            patient.id === data.patientId ? { ...patient, ward: data.newWard } : patient
+          );
+          console.log('✅ 병동 로컬 상태 업데이트 완료');
+          return updated;
+        });
+      });
+
       socketManager.on('patient_room_moved', (data) => {
         console.log('🏠 환자 방 이동 실시간 업데이트:', data);
         setPatients(prev => {
@@ -549,6 +571,56 @@ const HospitalBoard = ({ user, onLogout }) => {
     }
   };
 
+  const updatePatientGenderAge = async (patientId, newGenderAge) => {
+    try {
+      console.log('👤 성별/나이 업데이트 시작:', patientId, newGenderAge);
+      
+      // 즉시 로컬 상태 업데이트
+      setPatients(prevPatients => {
+        const updated = prevPatients.map(patient => {
+          if (patient.id === patientId) {
+            console.log(`👤 환자 ${patient.patient_name} 성별/나이 변경: "${patient.gender_age || ''}" → "${newGenderAge}"`);
+            return { ...patient, gender_age: newGenderAge };
+          }
+          return patient;
+        });
+        console.log('👤 성별/나이 로컬 상태 업데이트 완료');
+        return updated;
+      });
+      
+      console.log('📤 서버로 성별/나이 업데이트 전송');
+      await socketManager.updatePatientGenderAge(patientId, newGenderAge);
+      console.log('🚀 성별/나이 업데이트 서버 전송 완료');
+    } catch (error) {
+      console.error('❌ 성별/나이 업데이트 실패:', error);
+    }
+  };
+
+  const updatePatientWard = async (patientId, newWard) => {
+    try {
+      console.log('🏥 병동 업데이트 시작:', patientId, newWard);
+      
+      // 즉시 로컬 상태 업데이트
+      setPatients(prevPatients => {
+        const updated = prevPatients.map(patient => {
+          if (patient.id === patientId) {
+            console.log(`🏥 환자 ${patient.patient_name} 병동 변경: "${patient.ward || ''}" → "${newWard}"`);
+            return { ...patient, ward: newWard };
+          }
+          return patient;
+        });
+        console.log('🏥 병동 로컬 상태 업데이트 완료');
+        return updated;
+      });
+      
+      console.log('📤 서버로 병동 업데이트 전송');
+      await socketManager.updatePatientWard(patientId, newWard);
+      console.log('🚀 병동 업데이트 서버 전송 완료');
+    } catch (error) {
+      console.error('❌ 병동 업데이트 실패:', error);
+    }
+  };
+
   const updatePatientStatus = async (patientId, newStatus, assignedDoctor = null) => {
     try {
       console.log('🔄 환자 상태 업데이트:', patientId, newStatus, assignedDoctor);
@@ -618,6 +690,8 @@ const HospitalBoard = ({ user, onLogout }) => {
         assigned_doctor: patientData.procedure, // 시술명을 assigned_doctor로 저장
         doctor: patientData.doctor, // 담당의사
         notes: patientData.notes || '', // 비고
+        gender_age: patientData.genderAge || '', // 성별/나이
+        ward: patientData.ward || '', // 병동
         priority: patientData.priority || 1
       };
       
@@ -630,6 +704,8 @@ const HospitalBoard = ({ user, onLogout }) => {
         assigned_doctor: newPatientData.assigned_doctor, // 시술명 저장
         doctor: newPatientData.doctor, // 담당의사 저장
         notes: newPatientData.notes, // 비고 저장
+        gender_age: newPatientData.gender_age, // 성별/나이 저장
+        ward: newPatientData.ward, // 병동 저장
         priority: newPatientData.priority,
         status: 'waiting',
         wait_time: 0,
@@ -701,7 +777,18 @@ const HospitalBoard = ({ user, onLogout }) => {
         const updated = prevPatients.map(patient => {
           if (patient.id === patientId) {
             console.log(`🔄 환자 ${patient.patient_name} 방 이동: ${patient.department} → ${newRoom}`);
-            return { ...patient, department: newRoom, room: newRoom };
+            // 완료된 환자를 이동시킬 때는 상태를 'waiting'으로 변경
+            const newStatus = patient.status === 'completed' ? 'waiting' : patient.status;
+            if (patient.status === 'completed') {
+              console.log(`✨ 완료된 환자를 ${newRoom}으로 복귀: 상태를 'waiting'으로 변경`);
+            }
+            return { 
+              ...patient, 
+              department: newRoom, 
+              room: newRoom,
+              status: newStatus,
+              wait_time: newStatus === 'waiting' ? 0 : patient.wait_time // 대기 상태로 변경 시 대기시간 초기화
+            };
           }
           return patient;
         });
@@ -727,6 +814,19 @@ const HospitalBoard = ({ user, onLogout }) => {
       console.log('🚀 방 이동 서버 전송 완료');
     } catch (error) {
       console.error('❌ 환자 방 이동 실패:', error);
+    }
+  };
+
+  // 환자 순서 변경
+  const reorderPatients = async (patientOrders) => {
+    try {
+      console.log('🔄 환자 순서 변경 시작:', patientOrders);
+      
+      // 서버에 순서 변경 요청
+      await socketManager.reorderPatients(patientOrders);
+      console.log('🚀 환자 순서 변경 서버 전송 완료');
+    } catch (error) {
+      console.error('❌ 환자 순서 변경 실패:', error);
     }
   };
 
@@ -901,7 +1001,7 @@ const HospitalBoard = ({ user, onLogout }) => {
               {/* Angio 1R */}
               <div>
                 <PatientQueue 
-                  patients={patients.filter(p => p.department === 'Angio 1R' || p.room === 'Angio 1R')} 
+                  patients={patients.filter(p => (p.department === 'Angio 1R' || p.room === 'Angio 1R') && p.status !== 'completed')} 
                   roomTitle="Angio 1R"
                   isAdminMode={isAdminMode}
                   isPrivacyMode={isPrivacyMode}
@@ -912,16 +1012,19 @@ const HospitalBoard = ({ user, onLogout }) => {
                   onUpdatePatientProcedure={updatePatientProcedure}
                   onUpdatePatientDoctor={updatePatientDoctor}
                   onUpdatePatientNotes={updatePatientNotes}
+                  onUpdatePatientGenderAge={updatePatientGenderAge}
+                  onUpdatePatientWard={updatePatientWard}
                   onAddPatient={addPatient}
                   onDeletePatient={deletePatient}
                   onMovePatientToRoom={movePatientToRoom}
+                  onReorderPatients={reorderPatients}
                 />
               </div>
 
               {/* Angio 2R */}
               <div>
                 <PatientQueue 
-                  patients={patients.filter(p => p.department === 'Angio 2R' || p.room === 'Angio 2R')} 
+                  patients={patients.filter(p => (p.department === 'Angio 2R' || p.room === 'Angio 2R') && p.status !== 'completed')} 
                   roomTitle="Angio 2R"
                   isAdminMode={isAdminMode}
                   isPrivacyMode={isPrivacyMode}
@@ -932,16 +1035,19 @@ const HospitalBoard = ({ user, onLogout }) => {
                   onUpdatePatientProcedure={updatePatientProcedure}
                   onUpdatePatientDoctor={updatePatientDoctor}
                   onUpdatePatientNotes={updatePatientNotes}
+                  onUpdatePatientGenderAge={updatePatientGenderAge}
+                  onUpdatePatientWard={updatePatientWard}
                   onAddPatient={addPatient}
                   onDeletePatient={deletePatient}
                   onMovePatientToRoom={movePatientToRoom}
+                  onReorderPatients={reorderPatients}
                 />
               </div>
 
               {/* Hybrid room */}
               <div>
                 <PatientQueue 
-                  patients={patients.filter(p => p.department === 'Hybrid Room' || p.room === 'Hybrid Room' || p.department === 'Hybrid Room' || p.room === 'Hybrid Room')} 
+                  patients={patients.filter(p => (p.department === 'Hybrid Room' || p.room === 'Hybrid Room') && p.status !== 'completed')} 
                   roomTitle="Hybrid Room"
                   isAdminMode={isAdminMode}
                   isPrivacyMode={isPrivacyMode}
@@ -952,9 +1058,12 @@ const HospitalBoard = ({ user, onLogout }) => {
                   onUpdatePatientProcedure={updatePatientProcedure}
                   onUpdatePatientDoctor={updatePatientDoctor}
                   onUpdatePatientNotes={updatePatientNotes}
+                  onUpdatePatientGenderAge={updatePatientGenderAge}
+                  onUpdatePatientWard={updatePatientWard}
                   onAddPatient={addPatient}
                   onDeletePatient={deletePatient}
                   onMovePatientToRoom={movePatientToRoom}
+                  onReorderPatients={reorderPatients}
                 />
               </div>
             </div>
@@ -974,7 +1083,7 @@ const HospitalBoard = ({ user, onLogout }) => {
 
           {/* 사이드바 - 환자 요약 */}
           <div className="xl:col-span-2">
-            <PatientSummary patients={patients} isPrivacyMode={isPrivacyMode} isAdminMode={isAdminMode} isDarkMode={isDarkMode} />
+            <PatientSummary patients={patients} isPrivacyMode={isPrivacyMode} isAdminMode={isAdminMode} isDarkMode={isDarkMode} onMovePatientToRoom={movePatientToRoom} />
           </div>
         </div>
       </div>

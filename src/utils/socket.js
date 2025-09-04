@@ -324,6 +324,62 @@ class SocketManager {
     }
   }
 
+  async updatePatientGenderAge(patientId, newGenderAge) {
+    try {
+      console.log('👤 API 호출: 성별/나이 업데이트', { patientId, newGenderAge });
+      
+      this.emit('admin_action', {
+        type: 'update_patient_gender_age',
+        patientId,
+        newGenderAge,
+        timestamp: new Date()
+      });
+      
+      console.log('✅ 성별/나이 업데이트 전송 완료');
+      return { success: true };
+    } catch (error) {
+      console.error('성별/나이 업데이트 실패:', error);
+      throw error;
+    }
+  }
+
+  async updatePatientWard(patientId, newWard) {
+    try {
+      console.log('🏥 API 호출: 병동 업데이트', { patientId, newWard });
+      
+      this.emit('admin_action', {
+        type: 'update_patient_ward',
+        patientId,
+        newWard,
+        timestamp: new Date()
+      });
+      
+      console.log('✅ 병동 업데이트 전송 완료');
+      return { success: true };
+    } catch (error) {
+      console.error('병동 업데이트 실패:', error);
+      throw error;
+    }
+  }
+
+  async reorderPatients(patientOrders) {
+    try {
+      console.log('🔄 API 호출: 환자 순서 변경', patientOrders);
+      
+      this.emit('admin_action', {
+        type: 'reorder_patients',
+        patientOrders,
+        timestamp: new Date()
+      });
+      
+      console.log('✅ 환자 순서 변경 전송 완료');
+      return { success: true };
+    } catch (error) {
+      console.error('환자 순서 변경 실패:', error);
+      throw error;
+    }
+  }
+
   async fetchSchedule() {
     try {
       console.log('📅 스케줄 데이터 요청 URL:', `${SERVER_URL}/api/schedule`);

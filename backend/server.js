@@ -69,9 +69,19 @@ db.serialize(() => {
     wait_time INTEGER DEFAULT 0,
     procedure_start_time DATETIME,
     notes TEXT DEFAULT '',
+    added_at INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+
+  // 기존 테이블에 added_at 컬럼 추가 (없을 경우에만)
+  db.run(`ALTER TABLE patient_queue ADD COLUMN added_at INTEGER`, (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.error('added_at 컬럼 추가 실패:', err);
+    } else if (!err) {
+      console.log('✅ added_at 컬럼 추가 완료');
+    }
+  });
 
   // 병원 통계 테이블
   db.run(`CREATE TABLE IF NOT EXISTS hospital_stats (
@@ -127,6 +137,33 @@ db.serialize(() => {
       console.log('비고 필드 추가 중 오류 (이미 존재할 수 있음):', err.message);
     } else if (!err) {
       console.log('✅ patient_queue 테이블에 비고(notes) 필드 추가 완료');
+    }
+  });
+
+  // 성별/나이 필드 추가 마이그레이션
+  db.run(`ALTER TABLE patient_queue ADD COLUMN gender_age TEXT DEFAULT ''`, (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.log('성별/나이 필드 추가 중 오류 (이미 존재할 수 있음):', err.message);
+    } else if (!err) {
+      console.log('✅ patient_queue 테이블에 성별/나이(gender_age) 필드 추가 완료');
+    }
+  });
+
+  // 병동 필드 추가 마이그레이션
+  db.run(`ALTER TABLE patient_queue ADD COLUMN ward TEXT DEFAULT ''`, (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.log('병동 필드 추가 중 오류 (이미 존재할 수 있음):', err.message);
+    } else if (!err) {
+      console.log('✅ patient_queue 테이블에 병동(ward) 필드 추가 완료');
+    }
+  });
+
+  // 환자 순서 필드 추가 마이그레이션
+  db.run(`ALTER TABLE patient_queue ADD COLUMN display_order INTEGER DEFAULT 0`, (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.log('순서 필드 추가 중 오류 (이미 존재할 수 있음):', err.message);
+    } else if (!err) {
+      console.log('✅ patient_queue 테이블에 순서(display_order) 필드 추가 완료');
     }
   });
 
@@ -257,7 +294,7 @@ app.get('/api/doctors', (req, res) => {
 });
 
 app.get('/api/patients', (req, res) => {
-  db.all("SELECT * FROM patient_queue ORDER BY priority DESC, created_at ASC", (err, rows) => {
+  db.all("SELECT * FROM patient_queue ORDER BY department, display_order, priority DESC, created_at ASC", (err, rows) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
@@ -597,9 +634,9 @@ app.post('/api/patients/:id/status', (req, res) => {
 
 // 새 환자 추가
 app.post('/api/patients', (req, res) => {
-  const { patient_name, patient_id, department, assigned_doctor, doctor, priority, notes } = req.body;
+  const { patient_name, patient_id, department, assigned_doctor, doctor, priority, notes, gender_age, ward } = req.body;
   
-  console.log('🆕 새 환자 추가 요청:', { patient_name, patient_id, department, assigned_doctor, doctor, priority, notes });
+  console.log('🆕 새 환자 추가 요청:', { patient_name, patient_id, department, assigned_doctor, doctor, priority, notes, gender_age, ward });
   
   // 중복 확인
   db.get(
@@ -617,16 +654,30 @@ app.post('/api/patients', (req, res) => {
         return;
       }
       
-      // 새 환자 추가
-      db.run(
-        "INSERT INTO patient_queue (patient_name, patient_id, department, assigned_doctor, doctor, priority, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [patient_name, patient_id, department, assigned_doctor, doctor, priority || 1, notes || ''],
+      // 같은 방의 현재 최대 순서 조회 후 새 환자 추가
+      db.get(
+        "SELECT MAX(display_order) as max_order FROM patient_queue WHERE department = ?",
+        [department],
+        (err, result) => {
+          if (err) {
+            console.error('최대 순서 조회 실패:', err);
+            res.status(500).json({ error: err.message });
+            return;
+          }
+          
+          const nextOrder = (result?.max_order || 0) + 1;
+          
+          // 새 환자 추가
+          db.run(
+            "INSERT INTO patient_queue (patient_name, patient_id, department, assigned_doctor, doctor, priority, notes, gender_age, ward, display_order, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [patient_name, patient_id, department, assigned_doctor, doctor, priority || 1, notes || '', gender_age || '', ward || '', nextOrder, Date.now()],
         function(err) {
           if (err) {
             res.status(500).json({ error: err.message });
             return;
           }
           
+          const addedAtTime = Date.now();
           const newPatient = {
             id: this.lastID,
             patient_name,
@@ -638,7 +689,8 @@ app.post('/api/patients', (req, res) => {
             status: 'waiting',
             wait_time: 0,
             created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
+            added_at: addedAtTime // 데이터베이스와 일치하도록 added_at 사용
           };
           
           console.log('✅ 새 환자 추가 완료:', newPatient);
@@ -647,6 +699,8 @@ app.post('/api/patients', (req, res) => {
           io.emit('patient_added', newPatient);
           updateHospitalStats();
           res.json(newPatient);
+          }
+        );
         }
       );
     }
@@ -1013,10 +1067,18 @@ io.on('connection', (socket) => {
         
         console.log(`📋 기존 환자 정보: ${patient.patient_name}, 기존 방="${patient.department}"`);
         
+        // 완료된 환자를 이동시킬 때는 상태를 'waiting'으로 변경
+        const shouldResetStatus = patient.status === 'completed';
+        const newStatus = shouldResetStatus ? 'waiting' : patient.status;
+        
+        if (shouldResetStatus) {
+          console.log(`✨ 완료된 환자를 ${data.newRoom}으로 복귀: 상태를 'waiting'으로 변경`);
+        }
+
         // 데이터베이스 업데이트
         db.run(
-          "UPDATE patient_queue SET department = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-          [data.newRoom, data.patientId],
+          "UPDATE patient_queue SET department = ?, status = ?, wait_time = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [data.newRoom, newStatus, shouldResetStatus ? 0 : patient.wait_time, data.patientId],
           function(err) {
             if (err) {
               console.error('❌ 방 이동 데이터베이스 업데이트 실패:', err);
@@ -1102,6 +1164,106 @@ io.on('connection', (socket) => {
           }
         );
       });
+    } else if (data.type === 'update_patient_gender_age') {
+      console.log(`👤 성별/나이 업데이트 요청 받음: 환자ID=${data.patientId}, 성별/나이="${data.newGenderAge}"`);
+      
+      db.run(
+        "UPDATE patient_queue SET gender_age = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [data.newGenderAge, data.patientId],
+        function(err) {
+          if (err) {
+            console.error('성별/나이 업데이트 실패:', err);
+            return;
+          }
+          
+          console.log(`✅ 환자 ${data.patientId}의 성별/나이 업데이트 완료`);
+          
+          io.emit('patient_gender_age_updated', {
+            patientId: data.patientId,
+            newGenderAge: data.newGenderAge
+          });
+          
+          // 전체 환자 목록 재전송
+          db.all("SELECT * FROM patient_queue ORDER BY created_at", (err, allPatients) => {
+            if (!err) {
+              io.emit('patients_data', allPatients);
+            }
+          });
+        }
+      );
+    } else if (data.type === 'reorder_patients') {
+      console.log(`🔄 환자 순서 변경 요청 받음:`, data.patientOrders);
+      
+      // 트랜잭션으로 순서 업데이트
+      const updatePromises = data.patientOrders.map((item, index) => {
+        return new Promise((resolve, reject) => {
+          db.run(
+            "UPDATE patient_queue SET display_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            [index + 1, item.patientId],
+            function(err) {
+              if (err) {
+                console.error(`환자 ${item.patientId} 순서 업데이트 실패:`, err);
+                reject(err);
+              } else {
+                console.log(`✅ 환자 ${item.patientId} 순서를 ${index + 1}로 업데이트`);
+                resolve();
+              }
+            }
+          );
+        });
+      });
+      
+      Promise.all(updatePromises)
+        .then(() => {
+          console.log('✅ 모든 환자 순서 업데이트 완료');
+          
+          // 업데이트된 환자 목록 재전송
+          db.all("SELECT * FROM patient_queue ORDER BY department, display_order", (err, allPatients) => {
+            if (!err) {
+              console.log(`📤 순서 변경 후 전체 환자 목록 재전송 (${allPatients.length}명)`);
+              io.emit('patients_data', allPatients);
+            }
+          });
+          
+          io.emit('patients_reordered', {
+            success: true,
+            patientOrders: data.patientOrders
+          });
+        })
+        .catch((error) => {
+          console.error('❌ 환자 순서 업데이트 실패:', error);
+          io.emit('patients_reordered', {
+            success: false,
+            error: error.message
+          });
+        });
+    } else if (data.type === 'update_patient_ward') {
+      console.log(`🏥 병동 업데이트 요청 받음: 환자ID=${data.patientId}, 병동="${data.newWard}"`);
+      
+      db.run(
+        "UPDATE patient_queue SET ward = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [data.newWard, data.patientId],
+        function(err) {
+          if (err) {
+            console.error('병동 업데이트 실패:', err);
+            return;
+          }
+          
+          console.log(`✅ 환자 ${data.patientId}의 병동 업데이트 완료`);
+          
+          io.emit('patient_ward_updated', {
+            patientId: data.patientId,
+            newWard: data.newWard
+          });
+          
+          // 전체 환자 목록 재전송
+          db.all("SELECT * FROM patient_queue ORDER BY created_at", (err, allPatients) => {
+            if (!err) {
+              io.emit('patients_data', allPatients);
+            }
+          });
+        }
+      );
     }
   });
 
