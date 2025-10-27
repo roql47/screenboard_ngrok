@@ -1,63 +1,195 @@
-import React, { useState, useEffect } from 'react'
-import { Clock, Users, Bell, Settings, Lock, Unlock, Eye, EyeOff, LogOut, Sun, Moon } from 'lucide-react'
+import React, { useState, useEffect, useCallback } from 'react'
+import { flushSync } from 'react-dom'
+import { Clock, Users, Bell, Settings, Lock, Unlock, Eye, EyeOff, LogOut, Sun, Moon, Calendar, BarChart3, Upload } from 'lucide-react'
 import PatientQueue from './PatientQueue'
 import CurrentTime from './CurrentTime'
 import DoctorSchedule from './DoctorStatus'
 import PatientSummary from './PatientSummary'
+import StatisticsModal from './StatisticsModal'
 import socketManager from '../utils/socket'
+import * as XLSX from 'xlsx'
 
 const HospitalBoard = ({ user, onLogout }) => {
-  console.log('🏥 HospitalBoard 컴포넌트 렌더링 시작:', { user, onLogout: !!onLogout })
 
   const [isAdminMode, setIsAdminMode] = useState(false)
   const [isPrivacyMode, setIsPrivacyMode] = useState(true)
   const [isDarkMode, setIsDarkMode] = useState(true)
+  // 현지 시간 기준으로 오늘 날짜 가져오기 (시간대 문제 해결)
+  const getTodayDate = () => {
+    const today = new Date()
+    const year = today.getFullYear()
+    const month = String(today.getMonth() + 1).padStart(2, '0')
+    const day = String(today.getDate()).padStart(2, '0')
+    const result = `${year}-${month}-${day}`
+    return result
+  }
+  
+  const [selectedDate, setSelectedDate] = useState(() => {
+    // localStorage에서 저장된 날짜 확인
+    const savedDate = localStorage.getItem('selectedDate');
+    const today = getTodayDate();
+    
+    if (savedDate) {
+      console.log('🏁 localStorage에서 selectedDate 복원:', savedDate);
+      return savedDate;
+    } else {
+      console.log('🏁 초기 selectedDate 설정:', today);
+      return today;
+    }
+  }) // YYYY-MM-DD 형식
+  const [showDatePicker, setShowDatePicker] = useState(false)
+  const [showStatistics, setShowStatistics] = useState(false)
+  const [allPatients, setAllPatients] = useState({}) // 날짜별 환자 데이터 저장
 
-  // 테마 변경 시 body에 data-theme 속성 설정
-  useEffect(() => {
-    document.body.setAttribute('data-theme', isDarkMode ? 'dark' : 'light');
-  }, [isDarkMode]);
   const [patients, setPatients] = useState([])
   const [doctors, setDoctors] = useState([])
   const [stats, setStats] = useState({})
   const [schedule, setSchedule] = useState({})
   const [error, setError] = useState(null)
+  const [editingPatientId, setEditingPatientId] = useState(null) // 편집 중인 환자 ID 추적
+
+  // 날짜별 환자 데이터 로드 (useCallback으로 최적화)
+  const loadPatientsForDate = useCallback(async (date) => {
+    try {
+      console.log('📅 날짜별 환자 데이터 로드 시작:', date);
+      
+      // 먼저 서버에서 최신 데이터를 가져오기 시도
+      let patientsData = [];
+      try {
+        patientsData = await socketManager.fetchPatientsForDate(date);
+        console.log('📡 서버에서 환자 데이터 로드:', patientsData?.length || 0, '명');
+        
+        if (patientsData && Array.isArray(patientsData) && patientsData.length > 0) {
+          // 서버에서 받은 데이터를 날짜별로 필터링
+          const filteredData = patientsData.filter(p => 
+            p.patient_date === date || (!p.patient_date && date === getTodayDate())
+          );
+          
+          console.log('✅ 서버 데이터 필터링 후:', filteredData.length, '명');
+          setPatients(filteredData);
+          setAllPatients(prev => ({ ...prev, [date]: filteredData }));
+          
+          // 로컬 스토리지에 저장
+          localStorage.setItem(`patients_${date}`, JSON.stringify(filteredData));
+          return;
+        }
+      } catch (serverError) {
+        console.warn('⚠️ 서버에서 환자 데이터 로드 실패:', serverError);
+      }
+      
+      // 서버에서 데이터를 가져올 수 없으면 로컬 스토리지에서 확인
+      const localKey = `patients_${date}`;
+      const localData = localStorage.getItem(localKey);
+      
+      if (localData) {
+        const parsedData = JSON.parse(localData);
+        console.log('💾 로컬에서 환자 데이터 로드:', parsedData.length, '명');
+        
+        // 로컬 데이터도 날짜별로 필터링 (안전장치)
+        const filteredLocalData = parsedData.filter(p => 
+          p.patient_date === date || (!p.patient_date && date === getTodayDate())
+        );
+        
+        console.log('🔍 로컬 데이터 날짜 필터링 후:', filteredLocalData.length, '명');
+        setPatients(filteredLocalData);
+        setAllPatients(prev => ({ ...prev, [date]: filteredLocalData }));
+      } else {
+        console.log('❌ 해당 날짜의 환자 데이터 없음:', date);
+        setPatients([]);
+        setAllPatients(prev => ({ ...prev, [date]: [] }));
+      }
+    } catch (error) {
+      console.error('❌ 날짜별 환자 데이터 로드 실패:', error);
+      setPatients([]);
+    }
+  }, []) // 의존성 없음 - 순수 함수
+
+  // 현재 날짜의 환자 데이터를 로컬 스토리지에 저장
+  const savePatientsForDate = (date, patientsData) => {
+    try {
+      const localKey = `patients_${date}`
+      localStorage.setItem(localKey, JSON.stringify(patientsData))
+    } catch (error) {
+      console.error('❌ 환자 데이터 저장 실패:', error)
+    }
+  }
+
+  // 테마 변경 시 body에 data-theme 속성 설정
+  useEffect(() => {
+    document.body.setAttribute('data-theme', isDarkMode ? 'dark' : 'light');
+  }, [isDarkMode]);
+
+
+  // 선택된 날짜가 변경될 때 해당 날짜의 환자 데이터와 당직 정보 로드
+  useEffect(() => {
+    console.log('📅 useEffect: 선택된 날짜 변경됨 →', selectedDate)
+    loadPatientsForDate(selectedDate)
+  }, [selectedDate, loadPatientsForDate])
+  
+  // selectedDate 변경 감지용 디버깅 useEffect 및 localStorage 저장
+  useEffect(() => {
+    console.log('🎯 selectedDate 상태 변경 감지:', selectedDate)
+    // localStorage에 저장
+    localStorage.setItem('selectedDate', selectedDate);
+    console.log('💾 selectedDate localStorage에 저장:', selectedDate)
+  }, [selectedDate])
+
+  // 환자 데이터가 변경될 때마다 현재 선택된 날짜에 저장 (무한 루프 방지)
+  useEffect(() => {
+    // 환자 데이터가 실제로 있거나 빈 배열일 때만 저장 (undefined는 제외)
+    if (patients !== undefined && Array.isArray(patients)) {
+      savePatientsForDate(selectedDate, patients)
+      setAllPatients(prev => ({ ...prev, [selectedDate]: patients }))
+    }
+  }, [patients, selectedDate])
+
+
+  // 외부 클릭시 달력 드롭다운 닫기
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showDatePicker && !event.target.closest('.date-picker-container')) {
+        setShowDatePicker(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showDatePicker])
 
   // 컴포넌트 마운트 시 데이터 로드 및 소켓 이벤트 설정
   useEffect(() => {
     const loadInitialData = async () => {
       try {
         // 중앙 서버에서만 데이터 로드
-        console.log('중앙 서버에서 데이터 로딩 중...');
+        console.log('🚀 초기 데이터 로드 시작');
         
-        const [patientsData, doctorsData, statsData, scheduleData] = await Promise.all([
-          socketManager.fetchPatients(),
+        // 환자 데이터도 함께 로드 (오늘 날짜)
+        const todayDate = getTodayDate();
+        const [doctorsData, statsData, scheduleData, patientsData] = await Promise.all([
           socketManager.fetchDoctors(),
           socketManager.fetchStats(),
-          socketManager.fetchSchedule()
+          socketManager.fetchSchedule(),
+          socketManager.fetchPatientsForDate(todayDate)
         ]);
-
-        console.log('🌐 백엔드에서 받은 환자 데이터:', patientsData);
-        console.log('로드된 의사 데이터:', doctorsData);
         
-        if (patientsData && patientsData.length > 0) {
-          // 담당의사와 시술명 필드 확인
-          patientsData.forEach(patient => {
-            console.log(`🌐 백엔드: 환자 ${patient.patient_name}: 시술명=${patient.assigned_doctor}, 담당의사=${patient.doctor}`);
-          });
-        }
+        console.log('📋 초기 환자 데이터 로드 완료:', patientsData?.length || 0, '명');
 
-        // 중앙 서버 데이터로만 설정
-        setPatients(patientsData || []);
         setDoctors(doctorsData || []);
         setStats(statsData || {});
         
+        // 환자 데이터 설정
+        if (patientsData && Array.isArray(patientsData)) {
+          setPatients(patientsData);
+          // 로컬 스토리지에도 저장
+          localStorage.setItem(`patients_${todayDate}`, JSON.stringify(patientsData));
+        } else {
+          setPatients([]);
+        }
+        
         // 스케줄 데이터 처리 (빈 객체면 기본 구조 생성)
         if (scheduleData && Object.keys(scheduleData).length > 0) {
-          console.log('📅 백엔드에서 스케줄 데이터 수신:', scheduleData);
           setSchedule(scheduleData);
         } else {
-          console.log('📅 백엔드 스케줄 데이터 없음, 기본 구조 생성');
           const defaultSchedule = {
             월: { 오전: ['김영상', '이영상', '박민수'], 오후: ['박영상', '최영상', '정현우'] },
             화: { 오전: ['이영상', '박영상', '강지연'], 오후: ['김영상', '정영상', '윤서준'] },
@@ -74,10 +206,14 @@ const HospitalBoard = ({ user, onLogout }) => {
         }
         
         // API 데이터 로드 완료
-        console.log('중앙 서버 데이터 로드 완료 (스케줄 포함)');
       } catch (error) {
         console.error('중앙 서버 데이터 로드 실패:', error);
-        console.log('로컬 백업 데이터 확인 중...');
+        console.error('에러 상세:', error.stack);
+        // 에러 상태를 설정하지 않고 기본값으로 계속 진행
+        console.warn('⚠️ 서버 연결 실패했지만 로컬 데이터로 계속 진행');
+        setDoctors([]);
+        setStats({});
+        setSchedule({});
         
         // 백엔드 연결 실패 시 로컬 백업 데이터 사용
         try {
@@ -187,8 +323,70 @@ const HospitalBoard = ({ user, onLogout }) => {
     const setupSocketListeners = () => {
       // 환자 데이터 업데이트
       socketManager.on('patients_data', (data) => {
-        console.log('실시간 환자 데이터 수신:', data);
-        setPatients(data || []);
+        // 최신 selectedDate를 가져오기 위해 함수형 접근
+        const currentSelectedDate = localStorage.getItem('selectedDate') || getTodayDate();
+        console.log('📡 patients_data 이벤트 수신:', {
+          'data.length': data?.length || 0,
+          'selectedDate(state)': selectedDate,
+          'selectedDate(localStorage)': currentSelectedDate,
+          'getTodayDate()': getTodayDate()
+        });
+        
+        // 🔥 모든 환자 데이터를 날짜별로 로컬 스토리지에 저장하고 현재 선택된 날짜 데이터만 UI에 표시
+        if (data && Array.isArray(data)) {
+          const patientsByDate = {};
+          
+          data.forEach(patient => {
+            const patientDate = patient.patient_date || getTodayDate();
+            if (!patientsByDate[patientDate]) {
+              patientsByDate[patientDate] = [];
+            }
+            patientsByDate[patientDate].push(patient);
+          });
+          
+          console.log('📅 날짜별 환자 분류:', Object.keys(patientsByDate).map(date => 
+            `${date}: ${patientsByDate[date].length}명`
+          ).join(', '));
+          
+          // 각 날짜별로 로컬 스토리지에 저장
+          Object.keys(patientsByDate).forEach(date => {
+            localStorage.setItem(`patients_${date}`, JSON.stringify(patientsByDate[date]));
+          });
+          
+          // 현재 선택된 날짜의 환자 데이터만 UI에 표시 (localStorage에서 최신 날짜 사용)
+          const currentDatePatients = patientsByDate[currentSelectedDate] || [];
+          console.log(`🎯 현재 선택된 날짜(${currentSelectedDate})의 환자:`, currentDatePatients.length, '명');
+          
+          setPatients(currentDatePatients);
+          setAllPatients(prev => ({ ...prev, [currentSelectedDate]: currentDatePatients }));
+        }
+        
+        // 아래 기존 복잡한 로직은 더 이상 사용하지 않음
+        /*
+        setPatients(prev => {
+            const tempPatients = prev.filter(p => p.id > 1000000000000);
+            const nonTempPatients = prev.filter(p => p.id <= 1000000000000);
+            
+            // 임시 환자가 있는 경우, 이름/번호로 매칭하여 교체
+            let updatedPatients = [...nonTempPatients];
+            
+            tempPatients.forEach(tempPatient => {
+              const matchingServerPatient = filteredData.find(serverPatient => 
+                serverPatient.patient_name === tempPatient.patient_name && 
+                serverPatient.patient_id === tempPatient.patient_id
+              );
+              
+              if (matchingServerPatient) {
+                updatedPatients.push(matchingServerPatient);
+              } else {
+                updatedPatients.push(tempPatient);
+              }
+            });
+            
+            return updatedPatients;
+          });
+        }
+        */
       });
 
       socketManager.on('patient_updated', (updatedPatient) => {
@@ -205,13 +403,50 @@ const HospitalBoard = ({ user, onLogout }) => {
       socketManager.on('patient_added', (newPatient) => {
         console.log('🎯 새 환자 실시간 수신:', newPatient);
         
-        // 중복 방지: 이미 존재하는 환자인지 확인
+        // 날짜 필터링: 현재 선택된 날짜와 일치하는 환자만 추가
+        console.log('🔍 날짜 필터링 체크:', {
+          'newPatient.patient_date': newPatient.patient_date,
+          'selectedDate': selectedDate,
+          'getTodayDate()': getTodayDate(),
+          '일치여부': newPatient.patient_date === selectedDate
+        });
+        
+        if (newPatient.patient_date !== selectedDate && !(newPatient.patient_date === null && selectedDate === getTodayDate())) {
+          console.log('📅 다른 날짜 환자 - 현재 화면에 추가하지 않음:', newPatient.patient_date, '≠', selectedDate);
+          return;
+        }
+        
+        // 중복 방지: 이미 존재하는 환자인지 확인 (실제 ID와 임시 ID 모두 체크)
         setPatients(prev => {
-          const exists = prev.some(patient => patient.id === newPatient.id);
-          if (exists) {
-            console.log('⚠️ 이미 존재하는 환자 - 추가 생략:', newPatient.id);
+          const existsById = prev.some(patient => patient.id === newPatient.id);
+          const existsByNameAndNumber = prev.some(patient => 
+            patient.patient_name === newPatient.patient_name && 
+            patient.patient_id === newPatient.patient_id &&
+            patient.id > 1000000000000 // 임시 ID인 경우
+          );
+          
+          if (existsById) {
+            console.log('⚠️ 동일 ID 환자 존재 - 추가 생략:', newPatient.id);
             return prev;
           }
+          
+          if (existsByNameAndNumber) {
+            console.log('🔄 임시 환자를 실제 환자로 업데이트:', newPatient.patient_name);
+            console.log('📋 서버에서 받은 실제 환자 데이터:', {
+              notes: newPatient.notes,
+              gender_age: newPatient.gender_age, 
+              ward: newPatient.ward
+            });
+            // 임시 환자를 실제 환자 데이터로 업데이트 (제거하지 않고 교체)
+            return prev.map(p => {
+              if (p.patient_name === newPatient.patient_name && p.patient_id === newPatient.patient_id && p.id > 1000000000000) {
+                console.log('🔄 임시 환자 업데이트:', p.id, '→', newPatient.id);
+                return { ...newPatient }; // 실제 환자 데이터로 완전 교체
+              }
+              return p;
+            });
+          }
+          
           console.log('✅ 새 환자 추가됨:', newPatient);
           return [...prev, newPatient];
         });
@@ -225,6 +460,11 @@ const HospitalBoard = ({ user, onLogout }) => {
       // 실시간 환자 정보 업데이트 수신
       socketManager.on('patient_name_updated', (data) => {
         console.log('🎯 환자 이름 실시간 업데이트 수신:', data);
+        // 편집 중인 환자는 업데이트 건너뛰기 (포커스 유지)
+        if (editingPatientId === data.patientId) {
+          console.log('⏸️ 편집 중인 환자 - 실시간 업데이트 건너뛰기:', data.patientId);
+          return;
+        }
         console.log('🔄 현재 환자 목록 업데이트 중...');
         setPatients(prev => {
           const updated = prev.map(patient => 
@@ -237,6 +477,11 @@ const HospitalBoard = ({ user, onLogout }) => {
 
       socketManager.on('patient_number_updated', (data) => {
         console.log('환자 번호 실시간 업데이트 수신:', data);
+        // 편집 중인 환자는 업데이트 건너뛰기 (포커스 유지)
+        if (editingPatientId === data.patientId) {
+          console.log('⏸️ 편집 중인 환자 - 실시간 업데이트 건너뛰기:', data.patientId);
+          return;
+        }
         setPatients(prev => prev.map(patient => 
           patient.id === data.patientId ? { ...patient, patient_id: data.newNumber } : patient
         ));
@@ -244,7 +489,11 @@ const HospitalBoard = ({ user, onLogout }) => {
 
       socketManager.on('patient_procedure_updated', (data) => {
         console.log('🏥 시술명 실시간 업데이트:', data);
-        // 편집 중인 환자는 업데이트하지 않음 (편집 상태 보존)
+        // 편집 중인 환자는 업데이트 건너뛰기 (포커스 유지)
+        if (editingPatientId === data.patientId) {
+          console.log('⏸️ 편집 중인 환자 - 실시간 업데이트 건너뛰기:', data.patientId);
+          return;
+        }
         setPatients(prev => {
           const updated = prev.map(patient => {
             if (patient.id === data.patientId) {
@@ -260,6 +509,11 @@ const HospitalBoard = ({ user, onLogout }) => {
 
       socketManager.on('patient_doctor_updated', (data) => {
         console.log('👨‍⚕️ 담당의사 실시간 업데이트:', data);
+        // 편집 중인 환자는 업데이트 건너뛰기 (포커스 유지)
+        if (editingPatientId === data.patientId) {
+          console.log('⏸️ 편집 중인 환자 - 실시간 업데이트 건너뛰기:', data.patientId);
+          return;
+        }
         setPatients(prev => {
           const updated = prev.map(patient => 
             patient.id === data.patientId ? { ...patient, doctor: data.newDoctor } : patient
@@ -271,6 +525,11 @@ const HospitalBoard = ({ user, onLogout }) => {
 
       socketManager.on('patient_notes_updated', (data) => {
         console.log('📝 비고 실시간 업데이트:', data);
+        // 편집 중인 환자는 업데이트 건너뛰기 (포커스 유지)
+        if (editingPatientId === data.patientId) {
+          console.log('⏸️ 편집 중인 환자 - 실시간 업데이트 건너뛰기:', data.patientId);
+          return;
+        }
         setPatients(prev => {
           const updated = prev.map(patient => 
             patient.id === data.patientId ? { ...patient, notes: data.newNotes } : patient
@@ -282,6 +541,11 @@ const HospitalBoard = ({ user, onLogout }) => {
 
       socketManager.on('patient_gender_age_updated', (data) => {
         console.log('👤 성별/나이 실시간 업데이트:', data);
+        // 편집 중인 환자는 업데이트 건너뛰기 (포커스 유지)
+        if (editingPatientId === data.patientId) {
+          console.log('⏸️ 편집 중인 환자 - 실시간 업데이트 건너뛰기:', data.patientId);
+          return;
+        }
         setPatients(prev => {
           const updated = prev.map(patient => 
             patient.id === data.patientId ? { ...patient, gender_age: data.newGenderAge } : patient
@@ -293,6 +557,11 @@ const HospitalBoard = ({ user, onLogout }) => {
 
       socketManager.on('patient_ward_updated', (data) => {
         console.log('🏥 병동 실시간 업데이트:', data);
+        // 편집 중인 환자는 업데이트 건너뛰기 (포커스 유지)
+        if (editingPatientId === data.patientId) {
+          console.log('⏸️ 편집 중인 환자 - 실시간 업데이트 건너뛰기:', data.patientId);
+          return;
+        }
         setPatients(prev => {
           const updated = prev.map(patient => 
             patient.id === data.patientId ? { ...patient, ward: data.newWard } : patient
@@ -340,6 +609,7 @@ const HospitalBoard = ({ user, onLogout }) => {
         setStats(data);
       });
 
+
       // 클라이언트 활동 전송
       socketManager.on('connect', () => {
         socketManager.emit('client_activity', {
@@ -369,6 +639,8 @@ const HospitalBoard = ({ user, onLogout }) => {
       socketManager.off('doctor_updated');
       socketManager.off('stats_data');
       socketManager.off('stats_updated');
+      socketManager.off('duty_updated');
+      socketManager.off('duty_schedule_updated');
       socketManager.off('connect');
       socketManager.off('disconnect');
       socketManager.off('connect_error');
@@ -380,11 +652,10 @@ const HospitalBoard = ({ user, onLogout }) => {
     // 상태가 변경될 때마다 즉시 백업 (빈 배열은 저장하지 않음)
     if (patients && patients.length > 0) {
       localStorage.setItem('hospitalPatients_backup', JSON.stringify(patients));
-      console.log('🔄 환자 데이터 실시간 백업:', patients.length, '명');
       
       // 담당의사와 시술명 필드 확인
       patients.forEach(patient => {
-        console.log(`💾 백업: 환자 ${patient.patient_name}: 시술명=${patient.assigned_doctor}, 담당의사=${patient.doctor}`);
+        // 로그 제거됨
       });
     }
   }, [patients]);
@@ -404,7 +675,6 @@ const HospitalBoard = ({ user, onLogout }) => {
   useEffect(() => {
     if (schedule && Object.keys(schedule).length > 0) {
       localStorage.setItem('hospitalSchedule_backup', JSON.stringify(schedule));
-      console.log('📅 스케줄 데이터 실시간 백업 완료');
     }
   }, [schedule]);
 
@@ -621,6 +891,70 @@ const HospitalBoard = ({ user, onLogout }) => {
     }
   };
 
+  // 환자 날짜 업데이트 함수 추가
+  const updatePatientDate = async (patientId, newDate) => {
+    try {
+      console.log('📅 환자 날짜 업데이트 시작:', patientId, newDate);
+      
+      // 현재 화면에서 해당 환자 찾기
+      const targetPatient = patients.find(p => p.id === patientId);
+      if (!targetPatient) {
+        console.warn('❌ 환자를 찾을 수 없음:', patientId);
+        return;
+      }
+
+      // 서버에 날짜 업데이트 전송
+      console.log('📤 서버로 환자 날짜 업데이트 전송');
+      await socketManager.updatePatientDate(patientId, newDate);
+      console.log('🚀 환자 날짜 업데이트 서버 전송 완료');
+
+      // 환자를 현재 화면에서 제거 (다른 날짜로 이동했으므로)
+      if (newDate !== selectedDate) {
+        setPatients(prevPatients => {
+          const updated = prevPatients.filter(patient => patient.id !== patientId);
+          console.log(`📅 환자 ${targetPatient.patient_name}을(를) 현재 화면에서 제거 (${targetPatient.patient_date} → ${newDate})`);
+          return updated;
+        });
+
+        // 해당 날짜의 로컬 스토리지에 환자 추가
+        const targetDateKey = `patients_${newDate}`;
+        const existingData = localStorage.getItem(targetDateKey);
+        const targetDatePatients = existingData ? JSON.parse(existingData) : [];
+        
+        // 업데이트된 환자 정보로 추가
+        const updatedPatient = { ...targetPatient, patient_date: newDate };
+        const existingIndex = targetDatePatients.findIndex(p => p.id === patientId);
+        
+        if (existingIndex >= 0) {
+          targetDatePatients[existingIndex] = updatedPatient;
+        } else {
+          targetDatePatients.push(updatedPatient);
+        }
+        
+        localStorage.setItem(targetDateKey, JSON.stringify(targetDatePatients));
+        console.log(`💾 환자를 ${newDate} 로컬 스토리지에 저장 완료`);
+      } else {
+        // 같은 날짜로 업데이트하는 경우 (현재 화면에서 유지)
+        setPatients(prevPatients => {
+          const updated = prevPatients.map(patient => {
+            if (patient.id === patientId) {
+              console.log(`📅 환자 ${patient.patient_name} 날짜 업데이트: ${patient.patient_date} → ${newDate}`);
+              return { ...patient, patient_date: newDate };
+            }
+            return patient;
+          });
+          return updated;
+        });
+      }
+
+      // 현재 날짜의 로컬 스토리지 업데이트
+      savePatientsForDate(patients, selectedDate);
+      
+    } catch (error) {
+      console.error('❌ 환자 날짜 업데이트 실패:', error);
+    }
+  };
+
   const updatePatientStatus = async (patientId, newStatus, assignedDoctor = null) => {
     try {
       console.log('🔄 환자 상태 업데이트:', patientId, newStatus, assignedDoctor);
@@ -682,6 +1016,15 @@ const HospitalBoard = ({ user, onLogout }) => {
   const addPatient = async (patientData) => {
     try {
       console.log('🆕 환자 추가 시작:', patientData);
+      console.log('📋 받은 환자 데이터 필드들:', {
+        name: patientData.name,
+        number: patientData.number,
+        procedure: patientData.procedure,
+        doctor: patientData.doctor,
+        notes: patientData.notes,
+        genderAge: patientData.genderAge,
+        ward: patientData.ward
+      });
       
       const newPatientData = {
         patient_name: patientData.name,
@@ -692,37 +1035,60 @@ const HospitalBoard = ({ user, onLogout }) => {
         notes: patientData.notes || '', // 비고
         gender_age: patientData.genderAge || '', // 성별/나이
         ward: patientData.ward || '', // 병동
-        priority: patientData.priority || 1
+        priority: patientData.priority || 1,
+        patient_date: selectedDate // 선택된 날짜 추가
       };
       
       // 임시 ID로 즉시 로컬에 추가 (백엔드 서버가 없어도 작동)
       const tempPatient = {
         id: Date.now(), // 임시 ID
-        patient_name: newPatientData.patient_name,
-        patient_id: newPatientData.patient_id,
-        department: newPatientData.department,
-        assigned_doctor: newPatientData.assigned_doctor, // 시술명 저장
-        doctor: newPatientData.doctor, // 담당의사 저장
-        notes: newPatientData.notes, // 비고 저장
-        gender_age: newPatientData.gender_age, // 성별/나이 저장
-        ward: newPatientData.ward, // 병동 저장
-        priority: newPatientData.priority,
+        patient_name: patientData.name,
+        patient_id: patientData.number,
+        department: patientData.room,
+        assigned_doctor: patientData.procedure, // 시술명 저장
+        doctor: patientData.doctor, // 담당의사 저장
+        notes: patientData.notes || '', // 비고 저장
+        gender_age: patientData.genderAge || '', // 성별/나이 저장
+        ward: patientData.ward || '', // 병동 저장
+        priority: patientData.priority || 1,
         status: 'waiting',
         wait_time: 0,
+        patient_date: selectedDate, // 선택된 날짜 추가
+        addedAt: Date.now(), // 새로 추가된 시간
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
       
-      console.log(`🆕 새 환자 생성: ${tempPatient.patient_name}, 시술명=${tempPatient.assigned_doctor}, 담당의사=${tempPatient.doctor}`);
-      
-      setPatients(prev => {
-        const updated = [...prev, tempPatient];
-        console.log('✅ 로컬에 환자 추가:', tempPatient);
-        
-        // 백업은 useEffect에서 자동으로 처리됨
-        
-        return updated;
+      console.log(`🆕 새 환자 생성: ${tempPatient.patient_name}, 시술명=${tempPatient.assigned_doctor}, 담당의사=${tempPatient.doctor}, 병동=${tempPatient.ward}, 비고=${tempPatient.notes}, 날짜=${tempPatient.patient_date}`);
+      console.log('🔍 환자 추가 시 날짜 정보:', {
+        'selectedDate': selectedDate,
+        'tempPatient.patient_date': tempPatient.patient_date,
+        'getTodayDate()': getTodayDate(),
+        '날짜 일치': tempPatient.patient_date === selectedDate
       });
+      
+      // 현재 선택된 날짜와 환자의 날짜가 일치하는지 확인
+      if (tempPatient.patient_date === selectedDate) {
+        // 선택된 날짜와 일치하면 현재 화면에 추가 (즉시 동기적 업데이트)
+        flushSync(() => {
+          setPatients(prev => {
+            const updated = [...prev, tempPatient];
+            console.log('✅ 현재 날짜에 환자 추가 (동기적 업데이트):', tempPatient);
+            console.log('📋 추가된 환자의 병동:', tempPatient.ward, '비고:', tempPatient.notes);
+            return updated;
+          });
+        });
+      } else {
+        console.log('📅 다른 날짜 환자 추가 - 현재 화면에는 표시하지 않음:', tempPatient.patient_date);
+      }
+      
+      // 해당 날짜의 로컬 스토리지에도 저장
+      const targetDateKey = `patients_${tempPatient.patient_date}`;
+      const existingData = localStorage.getItem(targetDateKey);
+      const targetDatePatients = existingData ? JSON.parse(existingData) : [];
+      targetDatePatients.push(tempPatient);
+      localStorage.setItem(targetDateKey, JSON.stringify(targetDatePatients));
+      console.log('💾 해당 날짜 로컬 스토리지에 환자 저장:', tempPatient.patient_date);
       
       console.log('📤 서버로 전송할 환자 데이터:', newPatientData);
       
@@ -731,7 +1097,30 @@ const HospitalBoard = ({ user, onLogout }) => {
         await socketManager.addPatient(newPatientData);
         console.log('✅ 서버 추가 성공');
       } catch (serverError) {
-        console.warn('⚠️ 서버 추가 실패 (로컬만 추가됨):', serverError);
+        console.error('⚠️ 서버 추가 실패:', serverError);
+        
+        // 🔥 중복 오류인 경우 사용자에게 알림
+        if (serverError.message && serverError.message.includes('중복')) {
+          alert(`❌ 환자 추가 실패\n\n${serverError.message}\n\n같은 등록번호의 환자가 해당 날짜에 이미 존재합니다.`);
+          
+          // 로컬에 추가된 임시 환자 제거
+          if (tempPatient.patient_date === selectedDate) {
+            setPatients(prev => prev.filter(p => p.id !== tempPatient.id));
+          }
+          
+          // 로컬 스토리지에서도 제거
+          const targetDateKey = `patients_${tempPatient.patient_date}`;
+          const existingData = localStorage.getItem(targetDateKey);
+          if (existingData) {
+            const targetDatePatients = JSON.parse(existingData);
+            const filteredPatients = targetDatePatients.filter(p => p.id !== tempPatient.id);
+            localStorage.setItem(targetDateKey, JSON.stringify(filteredPatients));
+          }
+          
+          return; // 함수 종료
+        } else {
+          console.warn('⚠️ 서버 추가 실패하지만 로컬에는 추가됨:', serverError.message);
+        }
       }
     } catch (error) {
       console.error('환자 추가 실패:', error);
@@ -857,6 +1246,83 @@ const HospitalBoard = ({ user, onLogout }) => {
     }
   };
 
+  // xlsx 파일 업로드 처리
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    console.log('📁 파일 업로드 시작:', file.name);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = new Uint8Array(event.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+        console.log('📊 엑셀 데이터 파싱 완료:', jsonData);
+
+        // 첫 번째 행은 헤더이므로 2번째 행부터 처리
+        const dataRows = jsonData.slice(1);
+        let successCount = 0;
+        let failCount = 0;
+
+        dataRows.forEach((row, index) => {
+          // 빈 행 스킵
+          if (!row || row.length === 0 || !row[1]) {
+            return;
+          }
+
+          // 데이터 매핑
+          // A=0, B=1(구분), C=2, D=3, E=4, F=5(집도의), G=6(수술명), H=7, I=8(등록번호), J=9(성명), K=10(S/A), L=11, M=12, N=13(비고)
+          const registrationNumber = row[8] || ''; // I컬럼 - 등록번호
+          const patientName = row[9] || ''; // J컬럼 - 성명
+          const procedureName = row[6] || ''; // G컬럼 - 수술명
+          const doctorName = row[5] || ''; // F컬럼 - 집도의
+          const genderAge = row[10] || ''; // K컬럼 - S/A
+          const ward = 'GW'; // B컬럼 - 구분 (default로 GW)
+          const notes = row[13] || ''; // N컬럼 - 비고
+
+          // 필수 필드 확인 (등록번호와 성명이 있어야 함)
+          if (!registrationNumber || !patientName) {
+            console.log(`⚠️ 행 ${index + 2}: 필수 필드 누락 (등록번호: ${registrationNumber}, 성명: ${patientName})`);
+            failCount++;
+            return;
+          }
+
+          // 환자 추가
+          const patientData = {
+            name: patientName,
+            number: String(registrationNumber),
+            room: 'Angio 1R', // 기본 방
+            procedure: procedureName,
+            doctor: doctorName,
+            genderAge: genderAge,
+            ward: ward,
+            notes: notes,
+            priority: 1
+          };
+
+          console.log(`✅ 행 ${index + 2} 처리:`, patientData);
+          addPatient(patientData);
+          successCount++;
+        });
+
+        alert(`✅ 파일 업로드 완료!\n\n성공: ${successCount}명\n실패: ${failCount}명`);
+        
+        // 파일 입력 초기화
+        e.target.value = '';
+      } catch (error) {
+        console.error('❌ 엑셀 파일 처리 실패:', error);
+        alert('엑셀 파일 처리 중 오류가 발생했습니다.\n' + error.message);
+      }
+    };
+
+    reader.readAsArrayBuffer(file);
+  };
+
   // 의사 상태 업데이트 (실시간 동기화)
   const updateDoctorStatus = async (doctorId, status, currentPatient = null) => {
     try {
@@ -875,7 +1341,6 @@ const HospitalBoard = ({ user, onLogout }) => {
       console.error('의사 상태 업데이트 실패:', error);
     }
   };
-
 
 
   // 에러 발생 시 에러 화면 표시
@@ -897,12 +1362,11 @@ const HospitalBoard = ({ user, onLogout }) => {
     );
   }
 
-  console.log('🎨 HospitalBoard UI 렌더링:', { 
-    error, 
-    patientsCount: patients.length, 
-    doctorsCount: doctors.length,
-    user: user?.username 
-  })
+  
+  // 데이터 상태 체크
+  if (!patients || !doctors) {
+    // 로그 제거됨
+  }
 
   return (
     <div className={`min-h-screen p-3 md:p-6 transition-colors duration-300 ${
@@ -911,18 +1375,145 @@ const HospitalBoard = ({ user, onLogout }) => {
         : 'bg-white'
     }`}>
       <div className="max-w-full mx-auto px-4">
-        {/* 긴급 fallback - 만약 렌더링이 실패하면 기본 UI 표시 */}
+        {/* 사용자 정보 확인 */}
         {!user && (
-          <div className="text-center text-white">
+          <div className={`text-center mb-4 ${isDarkMode ? 'text-white' : 'text-black'}`}>
             <p>사용자 정보를 불러오는 중...</p>
           </div>
         )}
         {/* 헤더 */}
         <div className="text-center mb-8 relative">
-
+          {/* 선택된 날짜 표시 (왼쪽 위) */}
+          <div className={`absolute top-0 left-0 text-lg font-medium transition-colors duration-300 ${
+            isDarkMode ? 'text-gray-300' : 'text-gray-600'
+          }`}>
+            {new Date(selectedDate).toLocaleDateString('ko-KR', { 
+              year: 'numeric', 
+              month: 'long', 
+              day: 'numeric',
+              weekday: 'long'
+            })} 환자 현황
+          </div>
 
           {/* 버튼들 (우측) */}
           <div className="absolute top-0 right-0 flex gap-2">
+            {/* 달력 버튼 */}
+            <div className="relative date-picker-container">
+              <button
+                onClick={() => setShowDatePicker(!showDatePicker)}
+                className={`
+                  p-3 rounded-xl transition-all duration-300
+                  ${isDarkMode 
+                    ? 'bg-purple-600/20 border-purple-500 text-purple-300 hover:bg-purple-600/30' 
+                    : 'bg-purple-600/20 border-purple-500 text-purple-300 hover:bg-purple-600/30'
+                  }
+                  border-2 backdrop-blur-md
+                `}
+                title="날짜 선택"
+              >
+                <Calendar className="w-6 h-6" />
+              </button>
+              
+              {/* 날짜 선택 드롭다운 */}
+              {showDatePicker && (
+                <div 
+                  className={`
+                    absolute top-full right-0 mt-2 p-4 rounded-xl border-2 backdrop-blur-md shadow-lg min-w-[200px]
+                    ${isDarkMode 
+                      ? 'bg-black/90 border-purple-500 text-white' 
+                      : 'bg-white/95 border-purple-500 text-black'
+                    }
+                  `}
+                  style={{ zIndex: 9999 }}
+                >
+                  {/* 빠른 날짜 이동 버튼들 */}
+                  <div className="flex gap-1 mb-3">
+                    <button
+                      onClick={() => {
+                        const today = new Date()
+                        today.setDate(today.getDate() - 1)
+                        const year = today.getFullYear()
+                        const month = String(today.getMonth() + 1).padStart(2, '0')
+                        const day = String(today.getDate()).padStart(2, '0')
+                        const yesterday = `${year}-${month}-${day}`
+                        console.log('📅 어제 버튼 클릭 - 설정할 날짜:', yesterday)
+                        console.log('🔄 selectedDate 변경: 어제 버튼 →', yesterday)
+                        setSelectedDate(yesterday)
+                        setShowDatePicker(false)
+                      }}
+                      className={`
+                        flex-1 px-2 py-2 rounded text-sm font-medium transition-colors duration-200
+                        ${isDarkMode 
+                          ? 'bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-600/30' 
+                          : 'bg-purple-100 hover:bg-purple-200 text-purple-700 border border-purple-300'
+                        }
+                      `}
+                    >
+                      어제
+                    </button>
+                    <button
+                      onClick={() => {
+                        const today = getTodayDate()
+                        console.log('📅 오늘 버튼 클릭 - 설정할 날짜:', today)
+                        console.log('🔄 selectedDate 변경: 오늘 버튼 →', today)
+                        setSelectedDate(today)
+                        setShowDatePicker(false)
+                      }}
+                      className={`
+                        flex-1 px-2 py-2 rounded text-sm font-medium transition-colors duration-200
+                        ${isDarkMode 
+                          ? 'bg-green-600/20 hover:bg-green-600/40 text-green-300 border border-green-600/30' 
+                          : 'bg-green-100 hover:bg-green-200 text-green-700 border border-green-300'
+                        }
+                      `}
+                    >
+                      오늘
+                    </button>
+                    <button
+                      onClick={() => {
+                        const today = new Date()
+                        today.setDate(today.getDate() + 1)
+                        const year = today.getFullYear()
+                        const month = String(today.getMonth() + 1).padStart(2, '0')
+                        const day = String(today.getDate()).padStart(2, '0')
+                        const tomorrow = `${year}-${month}-${day}`
+                        console.log('📅 내일 버튼 클릭 - 설정할 날짜:', tomorrow)
+                        console.log('🔄 selectedDate 변경: 내일 버튼 →', tomorrow)
+                        setSelectedDate(tomorrow)
+                        setShowDatePicker(false)
+                      }}
+                      className={`
+                        flex-1 px-2 py-2 rounded text-sm font-medium transition-colors duration-200
+                        ${isDarkMode 
+                          ? 'bg-blue-600/20 hover:bg-blue-600/40 text-blue-300 border border-blue-600/30' 
+                          : 'bg-blue-100 hover:bg-blue-200 text-blue-700 border border-blue-300'
+                        }
+                      `}
+                    >
+                      내일
+                    </button>
+                  </div>
+                  
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    onChange={(e) => {
+                      console.log('🔄 selectedDate 변경: 날짜 입력 →', e.target.value)
+                      setSelectedDate(e.target.value)
+                      setShowDatePicker(false)
+                    }}
+                    className={`
+                      w-full px-3 py-2 rounded-lg border text-sm
+                      ${isDarkMode 
+                        ? 'bg-gray-800 border-gray-600 text-white' 
+                        : 'bg-white border-gray-300 text-black'
+                      }
+                    `}
+                  />
+                </div>
+              )}
+            </div>
+
             {/* 테마 토글 버튼 */}
             <button
               onClick={() => setIsDarkMode(!isDarkMode)}
@@ -985,7 +1576,7 @@ const HospitalBoard = ({ user, onLogout }) => {
             <h1 className={`text-4xl md:text-6xl font-bold transition-colors duration-300 ${
               isDarkMode ? 'text-white' : 'text-black'
             }`}>
-              심장뇌혈관 시술센터 전광판
+              심장뇌혈관 시술센터 현황판
             </h1>
           </div>
 
@@ -1001,8 +1592,19 @@ const HospitalBoard = ({ user, onLogout }) => {
               {/* Angio 1R */}
               <div>
                 <PatientQueue 
-                  patients={patients.filter(p => (p.department === 'Angio 1R' || p.room === 'Angio 1R') && p.status !== 'completed')} 
+                  patients={patients.filter(p => {
+                    const isCorrectRoom = (p.department === 'Angio 1R' || p.room === 'Angio 1R');
+                    const isNotCompleted = p.status !== 'completed';
+                    const isCorrectDate = p.patient_date === selectedDate;
+                    
+                    if (isCorrectRoom && isNotCompleted && !isCorrectDate) {
+                      console.log('🔍 Angio 1R 날짜 불일치:', p.patient_name, 'patient_date:', p.patient_date, 'selectedDate:', selectedDate);
+                    }
+                    
+                    return isCorrectRoom && isNotCompleted && isCorrectDate;
+                  })} 
                   roomTitle="Angio 1R"
+                  selectedDate={selectedDate}
                   isAdminMode={isAdminMode}
                   isPrivacyMode={isPrivacyMode}
                   isDarkMode={isDarkMode}
@@ -1014,18 +1616,21 @@ const HospitalBoard = ({ user, onLogout }) => {
                   onUpdatePatientNotes={updatePatientNotes}
                   onUpdatePatientGenderAge={updatePatientGenderAge}
                   onUpdatePatientWard={updatePatientWard}
+                  onUpdatePatientDate={updatePatientDate}
                   onAddPatient={addPatient}
                   onDeletePatient={deletePatient}
                   onMovePatientToRoom={movePatientToRoom}
                   onReorderPatients={reorderPatients}
+                  onEditingPatientChange={setEditingPatientId}
                 />
               </div>
 
               {/* Angio 2R */}
               <div>
                 <PatientQueue 
-                  patients={patients.filter(p => (p.department === 'Angio 2R' || p.room === 'Angio 2R') && p.status !== 'completed')} 
+                  patients={patients.filter(p => (p.department === 'Angio 2R' || p.room === 'Angio 2R') && p.status !== 'completed' && p.patient_date === selectedDate)} 
                   roomTitle="Angio 2R"
+                  selectedDate={selectedDate}
                   isAdminMode={isAdminMode}
                   isPrivacyMode={isPrivacyMode}
                   isDarkMode={isDarkMode}
@@ -1037,18 +1642,21 @@ const HospitalBoard = ({ user, onLogout }) => {
                   onUpdatePatientNotes={updatePatientNotes}
                   onUpdatePatientGenderAge={updatePatientGenderAge}
                   onUpdatePatientWard={updatePatientWard}
+                  onUpdatePatientDate={updatePatientDate}
                   onAddPatient={addPatient}
                   onDeletePatient={deletePatient}
                   onMovePatientToRoom={movePatientToRoom}
                   onReorderPatients={reorderPatients}
+                  onEditingPatientChange={setEditingPatientId}
                 />
               </div>
 
               {/* Hybrid room */}
               <div>
                 <PatientQueue 
-                  patients={patients.filter(p => (p.department === 'Hybrid Room' || p.room === 'Hybrid Room') && p.status !== 'completed')} 
+                  patients={patients.filter(p => (p.department === 'Hybrid Room' || p.room === 'Hybrid Room') && p.status !== 'completed' && p.patient_date === selectedDate)} 
                   roomTitle="Hybrid Room"
+                  selectedDate={selectedDate}
                   isAdminMode={isAdminMode}
                   isPrivacyMode={isPrivacyMode}
                   isDarkMode={isDarkMode}
@@ -1060,10 +1668,12 @@ const HospitalBoard = ({ user, onLogout }) => {
                   onUpdatePatientNotes={updatePatientNotes}
                   onUpdatePatientGenderAge={updatePatientGenderAge}
                   onUpdatePatientWard={updatePatientWard}
+                  onUpdatePatientDate={updatePatientDate}
                   onAddPatient={addPatient}
                   onDeletePatient={deletePatient}
                   onMovePatientToRoom={movePatientToRoom}
                   onReorderPatients={reorderPatients}
+                  onEditingPatientChange={setEditingPatientId}
                 />
               </div>
             </div>
@@ -1082,11 +1692,73 @@ const HospitalBoard = ({ user, onLogout }) => {
           </div>
 
           {/* 사이드바 - 환자 요약 */}
-          <div className="xl:col-span-2">
-            <PatientSummary patients={patients} isPrivacyMode={isPrivacyMode} isAdminMode={isAdminMode} isDarkMode={isDarkMode} onMovePatientToRoom={movePatientToRoom} />
+          <div className="xl:col-span-2 space-y-4">
+            <PatientSummary 
+              patients={patients.filter(p => p.patient_date === selectedDate)} 
+              selectedDate={selectedDate}
+              isPrivacyMode={isPrivacyMode} 
+              isAdminMode={isAdminMode} 
+              isDarkMode={isDarkMode} 
+              onMovePatientToRoom={movePatientToRoom} 
+            />
+            
+            {/* 전체통계 버튼과 첨부 버튼 */}
+            <div className={`
+              rounded-2xl backdrop-blur-md border-2 p-4 space-y-3
+              ${isDarkMode 
+                ? 'bg-black/40 border-purple-500/50' 
+                : 'bg-white/80 border-purple-300/50'
+              }
+            `}>
+              {/* 전체통계 버튼 */}
+              <button
+                onClick={() => setShowStatistics(true)}
+                className={`
+                  w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl
+                  font-semibold text-lg transition-all duration-300 transform hover:scale-105 active:scale-95
+                  ${isDarkMode 
+                    ? 'bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white shadow-lg shadow-purple-500/25' 
+                    : 'bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white shadow-lg shadow-purple-500/25'
+                  }
+                `}
+              >
+                <BarChart3 className="w-6 h-6" />
+                전체 통계
+              </button>
+
+              {/* 첨부 버튼 */}
+              <label
+                htmlFor="excel-upload"
+                className={`
+                  w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl
+                  font-semibold text-lg transition-all duration-300 transform hover:scale-105 active:scale-95 cursor-pointer
+                  ${isDarkMode 
+                    ? 'bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700 text-white shadow-lg shadow-green-500/25' 
+                    : 'bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 text-white shadow-lg shadow-green-500/25'
+                  }
+                `}
+              >
+                <Upload className="w-6 h-6" />
+                첨부
+              </label>
+              <input
+                id="excel-upload"
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+            </div>
           </div>
         </div>
       </div>
+
+      {/* 전체통계 모달 */}
+      <StatisticsModal 
+        isOpen={showStatistics}
+        onClose={() => setShowStatistics(false)}
+        isDarkMode={isDarkMode}
+      />
     </div>
   )
 }

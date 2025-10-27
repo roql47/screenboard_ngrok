@@ -54,9 +54,9 @@ const DoctorSchedule = ({ isAdminMode, schedule = {}, onUpdateSchedule, isDarkMo
       setLocalSchedule(newSchedule);
       
       // 서버로 스케줄 업데이트 전송
-      console.log('📤 편집 저장 - 스케줄 업데이트를 서버로 전송:', newSchedule);
+      // console.log('📤 편집 저장 - 스케줄 업데이트를 서버로 전송:', newSchedule);
       if (onUpdateSchedule) {
-        console.log('✅ onUpdateSchedule 함수 호출');
+        // console.log('✅ onUpdateSchedule 함수 호출');
         onUpdateSchedule(newSchedule);
       } else {
         console.error('❌ onUpdateSchedule 함수가 없습니다!');
@@ -87,9 +87,9 @@ const DoctorSchedule = ({ isAdminMode, schedule = {}, onUpdateSchedule, isDarkMo
       setLocalSchedule(newSchedule);
       
       // 서버로 스케줄 업데이트 전송
-      console.log('📤 의사 추가 - 스케줄 업데이트를 서버로 전송:', newSchedule);
+      // console.log('📤 의사 추가 - 스케줄 업데이트를 서버로 전송:', newSchedule);
       if (onUpdateSchedule) {
-        console.log('✅ onUpdateSchedule 함수 호출');
+        // console.log('✅ onUpdateSchedule 함수 호출');
         onUpdateSchedule(newSchedule);
       } else {
         console.error('❌ onUpdateSchedule 함수가 없습니다!');
@@ -111,9 +111,9 @@ const DoctorSchedule = ({ isAdminMode, schedule = {}, onUpdateSchedule, isDarkMo
       setLocalSchedule(newSchedule);
       
       // 서버로 스케줄 업데이트 전송
-      console.log('📤 의사 제거 - 스케줄 업데이트를 서버로 전송:', newSchedule);
+      // console.log('📤 의사 제거 - 스케줄 업데이트를 서버로 전송:', newSchedule);
       if (onUpdateSchedule) {
-        console.log('✅ onUpdateSchedule 함수 호출');
+        // console.log('✅ onUpdateSchedule 함수 호출');
         onUpdateSchedule(newSchedule);
       } else {
         console.error('❌ onUpdateSchedule 함수가 없습니다!');

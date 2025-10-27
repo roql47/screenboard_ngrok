@@ -2,41 +2,71 @@ import React, { useState, useEffect } from 'react'
 import { Users, Clock, CheckCircle, AlertCircle, Edit3, Check, X } from 'lucide-react'
 import socketManager, { fetchDutyStaff, updateDutyStaff } from '../utils/socket'
 
-const PatientSummary = ({ patients, isPrivacyMode, isAdminMode, isDarkMode, onMovePatientToRoom }) => {
+const PatientSummary = ({ patients, selectedDate, isPrivacyMode, isAdminMode, isDarkMode, onMovePatientToRoom }) => {
   // 당직 정보 상태 관리
   const [dutyStaff, setDutyStaff] = useState({
     Doctor: '김교수',
-    RN: '박간호사', 
+    RN: '박간호사',
+    PA: '',
     RT: '이방사선사'
   })
-  const [editingStaff, setEditingStaff] = useState(null) // 'Doctor', 'RN', 'RT' 중 하나
+  const [editingStaff, setEditingStaff] = useState(null) // 'Doctor', 'RN', 'PA', 'RT' 중 하나
   const [editValue, setEditValue] = useState('')
 
-  // 컴포넌트 마운트 시 당직 데이터 로드
+  // 날짜별 당직 데이터 로드
   useEffect(() => {
     const loadDutyStaff = async () => {
       try {
-        const data = await fetchDutyStaff();
-        console.log('🔄 당직 의료진 데이터 로드:', data);
-        setDutyStaff(data);
+        // 로컬 스토리지에서 해당 날짜의 당직 정보 확인
+        const localKey = `duty_${selectedDate}`;
+        const localData = localStorage.getItem(localKey);
+        
+        if (localData) {
+          const parsedData = JSON.parse(localData);
+          // console.log('🔄 로컬 당직 데이터 로드:', parsedData);
+          // 서버 형식에서 UI 형식으로 변환
+          setDutyStaff({
+            Doctor: parsedData.doctor || '',
+            RN: parsedData.rn || '',
+            PA: parsedData.pa || '',
+            RT: parsedData.rt || ''
+          });
+          return;
+        }
+        
+        // 로컬 데이터가 없으면 서버에서 로드
+        const data = await socketManager.fetchDutyStaff(selectedDate);
+        // console.log('🔄 서버에서 당직 데이터 로드:', data);
+        
+        const staffData = {
+          Doctor: data?.doctor || '',
+          RN: data?.rn || '',
+          PA: data?.pa || '',
+          RT: data?.rt || ''
+        };
+        setDutyStaff(staffData);
+        
+        // 로컬 스토리지에 저장 (서버 형식으로)
+        localStorage.setItem(localKey, JSON.stringify({
+          doctor: data?.doctor || '',
+          rn: data?.rn || '',
+          pa: data?.pa || '',
+          rt: data?.rt || ''
+        }));
+        
       } catch (error) {
         console.error('❌ 당직 의료진 로드 실패:', error);
-        // 실패 시 localStorage에서 백업 데이터 사용
-        const backup = localStorage.getItem('dutyStaff_backup');
-        if (backup) {
-          console.log('🔄 localStorage에서 당직 데이터 복원');
-          setDutyStaff(JSON.parse(backup));
-        }
+        setDutyStaff({ Doctor: '', RN: '', PA: '', RT: '' });
       }
     };
 
     loadDutyStaff();
-  }, []);
+  }, [selectedDate]);
 
   // Socket.IO 이벤트 리스너 설정
   useEffect(() => {
     const handleDutyUpdate = (updatedDutyStaff) => {
-      console.log('📡 당직 의료진 실시간 업데이트 수신:', updatedDutyStaff);
+      // console.log('📡 당직 의료진 실시간 업데이트 수신:', updatedDutyStaff);
       setDutyStaff(updatedDutyStaff);
       // localStorage에 백업
       localStorage.setItem('dutyStaff_backup', JSON.stringify(updatedDutyStaff));
@@ -77,7 +107,7 @@ const PatientSummary = ({ patients, isPrivacyMode, isAdminMode, isDarkMode, onMo
     setEditValue(dutyStaff[staffType])
   }
 
-  // 당직 편집 저장
+  // 당직 편집 저장 (날짜별)
   const saveEdit = async () => {
     if (!editValue.trim()) return
     
@@ -90,13 +120,25 @@ const PatientSummary = ({ patients, isPrivacyMode, isAdminMode, isDarkMode, onMo
       // 즉시 로컬 상태 업데이트 (UI 반응성)
       setDutyStaff(newDutyStaff);
       
-      // 백엔드에 업데이트 전송
-      console.log('🔄 당직 의료진 서버 업데이트 시작:', newDutyStaff);
-      await updateDutyStaff(newDutyStaff);
-      console.log('✅ 당직 의료진 서버 업데이트 완료');
+      // 서버 형식으로 변환
+      const serverFormat = {
+        doctor: newDutyStaff.Doctor || '',
+        rn: newDutyStaff.RN || '',
+        pa: newDutyStaff.PA || '',
+        rt: newDutyStaff.RT || ''
+      };
+      
+      // 로컬 스토리지에 저장
+      const localKey = `duty_${selectedDate}`;
+      localStorage.setItem(localKey, JSON.stringify(serverFormat));
+      
+      // 백엔드에 날짜별 업데이트 전송
+      // console.log('🔄 당직 정보 날짜별 업데이트 시작:', serverFormat, '날짜:', selectedDate);
+      await socketManager.updateDutyStaffForDate(serverFormat, selectedDate);
+      // console.log('✅ 당직 정보 날짜별 업데이트 완료');
       
     } catch (error) {
-      console.error('❌ 당직 의료진 업데이트 실패:', error);
+      console.error('❌ 당직 정보 업데이트 실패:', error);
       // 실패 시 이전 상태로 롤백
       setDutyStaff(dutyStaff);
     }
@@ -552,6 +594,72 @@ const PatientSummary = ({ patients, isPrivacyMode, isAdminMode, isDarkMode, onMo
                   <button
                     onClick={() => startEdit('RT')}
                     className="p-1 text-purple-400 hover:text-purple-300 opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          
+          {/* PA */}
+          <div className={`flex items-center justify-between p-2 rounded-lg border group transition-colors duration-300 ${
+            isDarkMode 
+              ? 'bg-yellow-900/20 border-yellow-700/30' 
+              : 'bg-yellow-50 border-yellow-200'
+          }`}>
+            <div className="flex items-center gap-3">
+              <Users className={`w-4 h-4 transition-colors duration-300 ${
+                isDarkMode ? 'text-yellow-400' : 'text-black'
+              }`} />
+              <span className={`text-base transition-colors duration-300 ${
+                isDarkMode ? 'text-yellow-300' : 'text-black'
+              }`}>PA</span>
+            </div>
+            {editingStaff === 'PA' ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  className={`px-2 py-1 rounded text-sm w-20 transition-colors duration-300 ${
+                    isDarkMode 
+                      ? 'bg-gray-800 text-white border border-gray-600' 
+                      : 'bg-white text-black border border-gray-300'
+                  }`}
+                  onKeyPress={(e) => e.key === 'Enter' && saveEdit()}
+                  autoFocus
+                />
+                <button
+                  onClick={saveEdit}
+                  className={`p-1 transition-colors duration-300 ${
+                    isDarkMode 
+                      ? 'text-green-400 hover:text-green-300' 
+                      : 'text-green-600 hover:text-green-700'
+                  }`}
+                >
+                  <Check className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={cancelEdit}
+                  className={`p-1 transition-colors duration-300 ${
+                    isDarkMode 
+                      ? 'text-red-400 hover:text-red-300' 
+                      : 'text-red-600 hover:text-red-700'
+                  }`}
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <div className={`text-base font-bold transition-colors duration-300 ${
+                  isDarkMode ? 'text-yellow-300' : 'text-black'
+                }`}>{dutyStaff.PA || '-'}</div>
+                {isAdminMode && (
+                  <button
+                    onClick={() => startEdit('PA')}
+                    className="p-1 text-yellow-400 hover:text-yellow-300 opacity-0 group-hover:opacity-100 transition-opacity"
                   >
                     <Edit3 className="w-3 h-3" />
                   </button>

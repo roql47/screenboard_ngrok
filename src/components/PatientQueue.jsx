@@ -1,22 +1,19 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { Clock, User, Stethoscope, Edit3, Check, X, Plus, Trash2 } from 'lucide-react'
 
-const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkMode, onUpdatePatientName, onUpdatePatientNumber, onUpdatePatientStatus, onUpdatePatientProcedure, onUpdatePatientDoctor, onUpdatePatientNotes, onUpdatePatientGenderAge, onUpdatePatientWard, onAddPatient, onDeletePatient, onMovePatientToRoom, onReorderPatients }) => {
+const PatientQueue = React.memo(({ patients, roomTitle, selectedDate, isAdminMode, isPrivacyMode, isDarkMode, onUpdatePatientName, onUpdatePatientNumber, onUpdatePatientStatus, onUpdatePatientProcedure, onUpdatePatientDoctor, onUpdatePatientNotes, onUpdatePatientGenderAge, onUpdatePatientWard, onUpdatePatientDate, onAddPatient, onDeletePatient, onMovePatientToRoom, onReorderPatients, onEditingPatientChange }) => {
+  
+  // 환자 데이터 변경 감지
+  useEffect(() => {
+    // 로그 제거됨
+  }, [patients, roomTitle])
   const [editingPatient, setEditingPatient] = useState(null)
-  const [editValues, setEditValues] = useState({ name: '', number: '', procedure: '', doctor: '', notes: '', genderAge: '', ward: '' })
+  const [editValues, setEditValues] = useState({ name: '', number: '', procedure: '', doctor: '', notes: '', genderAge: '', ward: '', date: '' })
   
-  // 입력 필드 포커스 유지를 위한 ref들
-  const numberInputRef = useRef(null)
-  const nameInputRef = useRef(null)
-  const procedureInputRef = useRef(null)
-  const doctorInputRef = useRef(null)
-  const notesInputRef = useRef(null)
-  const genderAgeInputRef = useRef(null)
-  const wardSelectRef = useRef(null)
+  // 입력 필드 ref 추가 (포커스 유지용)
+  const inputRefs = useRef({})
   
-  // 포커스 상태 추적
-  const [focusedField, setFocusedField] = useState(null)
-  const [cursorPosition, setCursorPosition] = useState(0)
+  // 포커스 관련 상태 완전 제거
   const [showAddForm, setShowAddForm] = useState(false)
   const [newPatient, setNewPatient] = useState({
     number: '',
@@ -29,23 +26,43 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
     status: 'waiting'
   })
 
-  // 관리자 모드 변경 시 편집 상태 초기화
-  useEffect(() => {
-    if (!isAdminMode && editingPatient) {
-      console.log('🔒 관리자 모드 해제 - 편집 모드 종료')
-      setEditingPatient(null)
-      setEditValues({ name: '', number: '', procedure: '', doctor: '', notes: '', genderAge: '', ward: '' })
-      setFocusedField(null)
-      setCursorPosition(0)
-      setShowAddForm(false)
-    }
-  }, [isAdminMode, editingPatient])
-
   // 드롭 기능 설정
   // 네이티브 드래그 앤 드롭 상태
   const [isDragOver, setIsDragOver] = useState(false)
   const [draggedPatient, setDraggedPatient] = useState(null)
   const [dragOverIndex, setDragOverIndex] = useState(null)
+  
+  // 터치 드래그 전역 상태
+  const [globalTouchDragging, setGlobalTouchDragging] = useState(false)
+  
+  // 터치 이벤트 throttling을 위한 ref
+  const touchThrottleRef = useRef(null)
+
+  // 관리자 모드 변경 시 편집 상태 초기화
+  useEffect(() => {
+    if (!isAdminMode && editingPatient) {
+      setEditingPatient(null)
+      setEditValues({ name: '', number: '', procedure: '', doctor: '', notes: '', genderAge: '', ward: '' })
+      setShowAddForm(false)
+    }
+  }, [isAdminMode, editingPatient])
+
+  // 터치 이벤트 최적화 (삼성 칠판용)
+  useEffect(() => {
+    // 터치 이벤트 passive 설정으로 성능 향상
+    const handleTouchMove = (e) => {
+      if (globalTouchDragging) {
+        e.preventDefault()
+      }
+    }
+
+    // 전역 터치 이벤트 리스너 추가 (passive: false로 preventDefault 가능하게)
+    document.addEventListener('touchmove', handleTouchMove, { passive: false })
+    
+    return () => {
+      document.removeEventListener('touchmove', handleTouchMove)
+    }
+  }, [globalTouchDragging])
 
   // 새로 추가된 환자 표시를 위한 상태
   const [currentTime, setCurrentTime] = useState(Date.now())
@@ -62,31 +79,22 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
   // 환자가 새로 추가된지 5분 이내인지 확인하는 함수
   const isNewlyAdded = (patient) => {
     const addedTime = patient.added_at || patient.addedAt // 두 필드명 모두 지원
-    if (!addedTime) {
-      console.log('❌ added_at/addedAt 없음:', patient.patient_name || patient.name)
-      return false
-    }
+    if (!addedTime) return false
+    
     const fiveMinutes = 5 * 60 * 1000 // 5분을 밀리초로 변환
     const timeDiff = currentTime - addedTime
-    const isNew = timeDiff < fiveMinutes
-    console.log('⏰ 새로 추가됨 체크:', patient.patient_name || patient.name, 
-      '추가시간:', new Date(addedTime).toLocaleTimeString(),
-      '경과시간:', Math.floor(timeDiff / 1000), '초',
-      '새로운가?:', isNew)
-    return isNew
+    return timeDiff < fiveMinutes
   }
 
   // 네이티브 드래그 앤 드롭 이벤트 핸들러
   const handleDragOver = (e) => {
     e.preventDefault()
     setIsDragOver(true)
-    console.log('🎯 드래그 오버:', roomTitle)
   }
 
   const handleDragLeave = (e) => {
     e.preventDefault()
     setIsDragOver(false)
-    console.log('👋 드래그 떠남:', roomTitle)
   }
 
   const handleDrop = (e) => {
@@ -94,20 +102,14 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
     setIsDragOver(false)
     
     const patientData = e.dataTransfer.getData('application/json')
-    console.log('📍 드롭 데이터:', patientData)
     
     try {
       const patient = JSON.parse(patientData)
-      console.log('📍 드롭 시도:', patient.patientName, 'from', patient.currentRoom, '→', roomTitle)
       
       if (patient.currentRoom !== roomTitle) {
-        console.log('✅ 환자 방 이동 실행:', patient.patientId, '→', roomTitle)
         onMovePatientToRoom(patient.patientId, roomTitle)
       } else if (patient.isInternalReorder && dragOverIndex !== null && dragOverIndex !== patient.currentIndex) {
-        console.log('🔄 같은 방 내 순서 변경:', patient.patientName, 'from index', patient.currentIndex, '→', dragOverIndex)
         handleInternalReorder(patient.patientId, patient.currentIndex, dragOverIndex)
-      } else {
-        console.log('⚠️ 같은 방으로 이동 시도 - 무시')
       }
     } catch (error) {
       console.error('❌ 드롭 데이터 파싱 오류:', error)
@@ -118,7 +120,6 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
 
   // 같은 방 내 환자 순서 변경 처리
   const handleInternalReorder = (patientId, fromIndex, toIndex) => {
-    console.log('🔄 방 내 순서 변경 처리:', { patientId, fromIndex, toIndex })
     
     const roomPatients = patients.filter(p => p.department === roomTitle || p.room === roomTitle)
     const sortedPatients = roomPatients.sort((a, b) => {
@@ -127,6 +128,11 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
       }
       return a.id - b.id
     })
+    
+    if (fromIndex >= sortedPatients.length || toIndex > sortedPatients.length || fromIndex < 0 || toIndex < 0) {
+      console.error('❌ 잘못된 인덱스:', fromIndex, toIndex)
+      return
+    }
     
     // 새로운 순서로 환자 배열 재정렬
     const reorderedPatients = [...sortedPatients]
@@ -139,7 +145,6 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
       newOrder: index + 1
     }))
     
-    console.log('📤 서버로 순서 변경 전송:', patientOrders)
     onReorderPatients(patientOrders)
   }
 
@@ -231,13 +236,17 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
       doctor: patient.doctor || '',
       notes: patient.notes || '',
       genderAge: patient.gender_age || '',
-      ward: patient.ward || ''
+      ward: patient.ward || '',
+      date: patient.patient_date || selectedDate || ''
     })
+    // 편집 중인 환자 ID를 상위 컴포넌트에 알림
+    if (onEditingPatientChange) {
+      onEditingPatientChange(patient.id)
+    }
   }
 
   // 편집 저장
   const saveEdit = () => {
-    console.log('💾 편집 저장 시작:', editValues);
     
     if (editValues.name.trim()) {
       onUpdatePatientName(editingPatient, editValues.name.trim())
@@ -260,64 +269,27 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
     if (editValues.ward.trim()) {
       onUpdatePatientWard(editingPatient, editValues.ward.trim())
     }
+    if (editValues.date && editValues.date !== selectedDate) {
+      onUpdatePatientDate(editingPatient, editValues.date)
+    }
     
-    console.log('✅ 편집 저장 완료 - 편집 모드 종료');
     setEditingPatient(null)
-    setEditValues({ name: '', number: '', procedure: '', doctor: '', notes: '', genderAge: '', ward: '' })
+    setEditValues({ name: '', number: '', procedure: '', doctor: '', notes: '', genderAge: '', ward: '', date: '' })
+    // 편집 종료를 상위 컴포넌트에 알림
+    if (onEditingPatientChange) {
+      onEditingPatientChange(null)
+    }
   }
 
-  // 포커스와 커서 위치 복원을 위한 useEffect
-  useEffect(() => {
-    if (focusedField && editingPatient) {
-      const getInputRef = (field) => {
-        switch (field) {
-          case 'number': return numberInputRef;
-          case 'name': return nameInputRef;
-          case 'procedure': return procedureInputRef;
-          case 'doctor': return doctorInputRef;
-          case 'notes': return notesInputRef;
-          case 'genderAge': return genderAgeInputRef;
-          case 'ward': return wardSelectRef;
-          default: return null;
-        }
-      };
-      
-      const inputRef = getInputRef(focusedField);
-      if (inputRef?.current) {
-        console.log(`🎯 포커스 복원: ${focusedField}, 커서위치: ${cursorPosition}`);
-        inputRef.current.focus();
-        // select 요소는 setSelectionRange를 지원하지 않으므로 체크
-        if (inputRef.current.setSelectionRange && focusedField !== 'ward') {
-          inputRef.current.setSelectionRange(cursorPosition, cursorPosition);
-        }
-      }
-    }
-  }, [editValues, focusedField, cursorPosition, editingPatient]);
+  // 모든 포커스 복원 로직 완전 삭제
 
-  // 포커스 유지하면서 값 변경
-  const handleFieldChange = useCallback((field, value, inputRef) => {
-    // 현재 커서 위치 저장 (select 요소는 selectionStart를 지원하지 않음)
-    const currentElement = inputRef.current;
-    const newCursorPosition = currentElement && currentElement.selectionStart !== undefined 
-      ? currentElement.selectionStart 
-      : 0;
-    
-    console.log(`✏️ 필드 변경: ${field} = "${value}", 커서위치: ${newCursorPosition}`);
-    
-    // 포커스 상태 업데이트
-    setFocusedField(field);
-    setCursorPosition(newCursorPosition);
-    
-    // 상태 업데이트
-    setEditValues(prev => ({ ...prev, [field]: value }));
-  }, []);
+  // 한글 조합 관련 코드 제거됨 - 단순한 onChange 방식 사용
 
   // 편집 중 필드별 저장 (Enter 키나 포커스 이탈 시에만)
-  const saveField = (field, value) => {
+  const saveField = useCallback((field, value) => {
     // 필수 필드들은 빈 값일 때 저장하지 않음, 비고는 빈 값 허용
     if (field !== 'notes' && !value.trim()) return;
     
-    console.log(`💾 필드 저장: ${field} = "${value}"`);
     
     switch (field) {
       case 'name':
@@ -342,43 +314,54 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
         onUpdatePatientWard(editingPatient, value.trim());
         break;
     }
-  }
+  }, [editingPatient, onUpdatePatientName, onUpdatePatientNumber, onUpdatePatientProcedure, onUpdatePatientDoctor, onUpdatePatientNotes, onUpdatePatientGenderAge, onUpdatePatientWard])
+  
+  // 입력 필드 onChange 핸들러들을 메모이제이션
+  const handleNumberChange = useCallback((e) => {
+    setEditValues(prev => ({ ...prev, number: e.target.value }));
+  }, []);
+  
+  const handleNameChange = useCallback((e) => {
+    setEditValues(prev => ({ ...prev, name: e.target.value }));
+  }, []);
+  
+  const handleProcedureChange = useCallback((e) => {
+    setEditValues(prev => ({ ...prev, procedure: e.target.value }));
+  }, []);
+  
+  const handleDoctorChange = useCallback((e) => {
+    setEditValues(prev => ({ ...prev, doctor: e.target.value }));
+  }, []);
+  
+  const handleNotesChange = useCallback((e) => {
+    setEditValues(prev => ({ ...prev, notes: e.target.value }));
+  }, []);
+  
+  const handleGenderAgeChange = useCallback((e) => {
+    setEditValues(prev => ({ ...prev, genderAge: e.target.value }));
+  }, []);
+  
+  const handleWardChange = useCallback((e) => {
+    setEditValues(prev => ({ ...prev, ward: e.target.value }));
+    // select 변경 시 즉시 저장
+    if (e.target.value) {
+      saveField('ward', e.target.value);
+    }
+  }, [saveField]);
 
   // 편집 취소
   const cancelEdit = () => {
     setEditingPatient(null)
     setEditValues({ name: '', number: '', procedure: '', doctor: '', notes: '', genderAge: '', ward: '' })
-    setFocusedField(null)
-    setCursorPosition(0)
-  }
-
-  // 포커스 시작 핸들러
-  const handleFocus = (field, inputRef) => {
-    console.log(`🎯 포커스 시작: ${field}`);
-    setFocusedField(field);
-    const currentElement = inputRef.current;
-    if (currentElement && currentElement.selectionStart !== undefined) {
-      setCursorPosition(currentElement.selectionStart || 0);
-    } else {
-      setCursorPosition(0); // select 요소의 경우 0으로 설정
+    // 편집 종료를 상위 컴포넌트에 알림
+    if (onEditingPatientChange) {
+      onEditingPatientChange(null)
     }
   }
 
-  // 포커스 종료 핸들러  
-  const handleBlur = () => {
-    console.log('🔄 포커스 종료');
-    // 포커스 상태는 유지하되, 약간의 지연 후 체크
-    setTimeout(() => {
-      const activeElement = document.activeElement;
-      const isInputField = [numberInputRef, nameInputRef, procedureInputRef, doctorInputRef, notesInputRef, genderAgeInputRef, wardSelectRef]
-        .some(ref => ref.current === activeElement);
-      
-      if (!isInputField) {
-        setFocusedField(null);
-        setCursorPosition(0);
-      }
-    }, 100);
-  }
+  // 포커스 관련 함수들 완전 제거
+
+  // 포커스 관련 함수들 완전 제거
 
   // 상태 변경
   const handleStatusChange = (patientId, newStatus) => {
@@ -386,7 +369,6 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
     const patient = patients.find(p => p.id === patientId);
     const currentProcedure = patient?.assigned_doctor || patient?.procedure;
     
-    console.log(`🔄 상태 변경: 환자ID=${patientId}, 상태=${newStatus}, 기존시술명="${currentProcedure}"`);
     
     // 기존 시술명을 함께 전달하여 보존
     onUpdatePatientStatus(patientId, newStatus, currentProcedure)
@@ -414,9 +396,9 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
         ...newPatient,
         room: roomTitle,
         department: roomTitle,
+        patient_date: selectedDate, // 선택된 날짜 추가
         addedAt: Date.now() // 추가된 시간 기록
       }
-      console.log('🆕 새 환자 추가:', patientWithTime.name, '시간:', new Date(patientWithTime.addedAt).toLocaleTimeString())
       onAddPatient(patientWithTime)
       toggleAddForm()
     }
@@ -467,11 +449,6 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
         <h2 className={`text-3xl font-bold transition-colors duration-300 ${
           isDarkMode ? 'text-white' : 'text-black'
         }`}>{roomTitle}</h2>
-        {isDragOver && (
-          <div className="text-green-400 text-sm font-medium animate-pulse">
-            🏠 환자를 여기로 이동
-          </div>
-        )}
       </div>
 
       <div className="space-y-2">
@@ -513,12 +490,10 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
               const handleDragStart = (e) => {
                 if (isAdminMode) {
                   e.preventDefault()
-                  console.log('❌ 관리자 모드에서는 드래그 불가')
                   return
                 }
                 
                 setIsDragging(true)
-                console.log('🚀🚀🚀 네이티브 드래그 시작!', patient.patient_name || patient.name, 'from', patient.department || patient.room)
                 
                 const patientData = {
                   patientId: patient.id,
@@ -530,99 +505,232 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
                 
                 e.dataTransfer.setData('application/json', JSON.stringify(patientData))
                 e.dataTransfer.effectAllowed = 'move'
-                console.log('📦 드래그 데이터 설정 완료:', patientData)
               }
 
               const handleDragEnd = (e) => {
                 setIsDragging(false)
-                console.log('🏁 네이티브 드래그 종료:', patient.patient_name || patient.name)
               }
 
-              // 터치 이벤트 핸들러 (터치스크린용)
-              const handleTouchStart = (e) => {
-                if (isAdminMode) {
-                  console.log('❌ 관리자 모드에서는 터치 드래그 불가')
-                  return
-                }
-                
-                const touch = e.touches[0]
-                setTouchStartPos({ x: touch.clientX, y: touch.clientY })
-                console.log('👆 터치 시작:', patient.patient_name || patient.name, 'at', touch.clientX, touch.clientY)
-              }
+               // 터치 이벤트 핸들러 (터치스크린용)
+               const handleTouchStart = (e) => {
+                 if (isAdminMode) {
+                   return
+                 }
+                 
+                 // 터치 이벤트 전파 방지 (다른 터치 핸들러와 충돌 방지)
+                 e.stopPropagation()
+                 
+                 // 드래그 상태 초기화
+                 setIsDragging(false)
+                 
+                 const touch = e.touches[0]
+                 setTouchStartPos({ x: touch.clientX, y: touch.clientY })
+                 
+                 console.log('🖐️ 터치 시작:', { x: touch.clientX, y: touch.clientY })
+               }
 
               const handleTouchMove = (e) => {
                 if (isAdminMode || !touchStartPos) return
                 
-                e.preventDefault() // 스크롤 방지
+                // 터치 이벤트 전파 방지
+                e.stopPropagation()
+                
                 const touch = e.touches[0]
-                setTouchCurrentPos({ x: touch.clientX, y: touch.clientY })
+                
+                // 터치 이벤트 throttling (성능 최적화)
+                if (touchThrottleRef.current) {
+                  clearTimeout(touchThrottleRef.current)
+                }
+                
+                touchThrottleRef.current = setTimeout(() => {
+                  setTouchCurrentPos({ x: touch.clientX, y: touch.clientY })
+                }, 16) // ~60fps
                 
                 // 드래그 거리 계산
                 const deltaX = Math.abs(touch.clientX - touchStartPos.x)
                 const deltaY = Math.abs(touch.clientY - touchStartPos.y)
                 const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY)
                 
-                // 일정 거리 이상 움직이면 드래그 시작
-                if (distance > 10 && !isDragging) {
+                // 삼성 칠판용 드래그 시작 거리를 15px로 더 감소 (매우 민감하게)
+                if (distance > 15 && !isDragging) {
                   setIsDragging(true)
-                  console.log('🚀👆 터치 드래그 시작!', patient.patient_name || patient.name)
+                  setGlobalTouchDragging(true) // 전역 드래그 상태 업데이트
+                  console.log('🚀 터치 드래그 시작:', { 
+                    distance, 
+                    touch: { x: touch.clientX, y: touch.clientY },
+                    patient: patient.patient_name 
+                  })
+                  
+                  // 햅틱 피드백 (지원하는 디바이스에서)
+                  if (navigator.vibrate) {
+                    navigator.vibrate(50)
+                  }
                 }
                 
-                console.log('👆 터치 이동:', touch.clientX, touch.clientY, 'distance:', distance)
+                // 드래그 모드일 때 스크롤 방지
+                if (isDragging) {
+                  e.preventDefault()
+                  
+                  // 터치 드래그 중 드롭존 하이라이트
+                  const elementBelow = document.elementFromPoint(touch.clientX, touch.clientY)
+                  const dropZone = elementBelow?.closest('[data-drop-index]')
+                  
+                  if (dropZone) {
+                    const dropIndex = parseInt(dropZone.getAttribute('data-drop-index'))
+                    if (dropIndex !== dragOverIndex) {
+                      setDragOverIndex(dropIndex)
+                      console.log('🎯 드롭존 하이라이트:', dropIndex)
+                    }
+                  } else if (dragOverIndex !== null) {
+                    setDragOverIndex(null)
+                  }
+                  
+                  // 로그 빈도 줄이기 (throttling)
+                  if (Math.random() < 0.05) { // 5%만 로그
+                    console.log('👆 터치 드래그 중:', { x: touch.clientX, y: touch.clientY })
+                  }
+                }
+                
               }
 
               const handleTouchEnd = (e) => {
                 if (isAdminMode || !touchStartPos) return
                 
-                console.log('🏁👆 터치 종료:', patient.patient_name || patient.name)
+                // 터치 이벤트 전파 방지
+                e.stopPropagation()
+                e.preventDefault()
+                
+                console.log('🖐️ 터치 종료:', { 
+                  isDragging, 
+                  touchCurrentPos, 
+                  patient: patient.patient_name,
+                  touchStartPos
+                })
                 
                 if (isDragging && touchCurrentPos) {
-                  // 터치 종료 위치에서 드롭존 찾기
+                  // 터치 종료 위치에서 요소 찾기
                   const elementBelow = document.elementFromPoint(touchCurrentPos.x, touchCurrentPos.y)
-                  console.log('🎯 터치 종료 위치의 요소:', elementBelow)
+                  console.log('🎯 터치 종료 지점 요소:', elementBelow)
                   
-                  // 드롭존 찾기 (부모 요소들을 순회)
-                  let dropZone = elementBelow
+                  // 더 간단한 드롭 로직: 가장 가까운 방 찾기
+                  let targetRoom = null
                   let attempts = 0
-                  const maxAttempts = 10 // 무한 루프 방지
+                  let dropZone = elementBelow
                   
-                  while (dropZone && !dropZone.hasAttribute('data-room') && attempts < maxAttempts) {
+                  // DOM 트리를 올라가면서 data-room 속성을 가진 요소 찾기
+                  while (dropZone && !dropZone.hasAttribute('data-room') && attempts < 10) {
                     dropZone = dropZone.parentElement
                     attempts++
                   }
                   
                   if (dropZone && dropZone.hasAttribute('data-room')) {
-                    const targetRoom = dropZone.getAttribute('data-room')
-                    const currentRoom = patient.department || patient.room
+                    targetRoom = dropZone.getAttribute('data-room')
+                    console.log('🎯 찾은 타겟 방:', targetRoom)
+                  } else {
+                    // 방을 찾지 못한 경우, 더 정확한 위치 기반 방 결정
+                    const screenWidth = window.innerWidth
+                    const screenHeight = window.innerHeight
+                    const x = touchCurrentPos.x
+                    const y = touchCurrentPos.y
                     
-                    console.log('📍 터치 드롭:', patient.patient_name || patient.name, 'from', currentRoom, '→', targetRoom)
+                    // 모든 방 요소들의 위치를 확인
+                    const roomElements = document.querySelectorAll('[data-room]')
+                    let closestRoom = null
+                    let closestDistance = Infinity
                     
-                    // 유효한 방 이름인지 확인
-                    const validRooms = ['Angio 1R', 'Angio 2R', 'Hybrid Room']
-                    if (validRooms.includes(targetRoom)) {
-                      if (currentRoom !== targetRoom) {
-                        console.log('✅ 터치로 환자 방 이동 실행:', patient.id, '→', targetRoom)
-                        onMovePatientToRoom(patient.id, targetRoom)
-                      } else {
-                        console.log('⚠️ 같은 방으로 터치 이동 시도 - 무시')
+                    roomElements.forEach(roomEl => {
+                      const rect = roomEl.getBoundingClientRect()
+                      const roomCenterX = rect.left + rect.width / 2
+                      const roomCenterY = rect.top + rect.height / 2
+                      
+                      const distance = Math.sqrt(
+                        Math.pow(x - roomCenterX, 2) + Math.pow(y - roomCenterY, 2)
+                      )
+                      
+                      if (distance < closestDistance) {
+                        closestDistance = distance
+                        closestRoom = roomEl.getAttribute('data-room')
                       }
+                    })
+                    
+                    if (closestRoom) {
+                      targetRoom = closestRoom
+                      console.log('📍 가장 가까운 방 결정:', targetRoom, { distance: closestDistance })
                     } else {
-                      console.log('❌ 유효하지 않은 방 이름:', targetRoom)
+                      // 백업: 화면 위치 기반
+                      if (x < screenWidth / 3) {
+                        targetRoom = 'Angio 1R'
+                      } else if (x < screenWidth * 2 / 3) {
+                        targetRoom = 'Angio 2R'  
+                      } else {
+                        targetRoom = 'Hybrid Room'
+                      }
+                      console.log('📍 백업 위치 기반 방 결정:', targetRoom, { x, screenWidth })
+                    }
+                  }
+                  
+                  const currentRoom = patient.department || patient.room
+                  console.log('🏠 현재 방:', currentRoom, '→ 타겟 방:', targetRoom)
+                  
+                  // 유효한 방 이름인지 확인
+                  const validRooms = ['Angio 1R', 'Angio 2R', 'Hybrid Room']
+                  
+                  if (validRooms.includes(targetRoom)) {
+                    if (currentRoom !== targetRoom) {
+                      // 다른 방으로 이동
+                      console.log('✅ 환자 방 이동 실행:', patient.patient_name, currentRoom, '→', targetRoom)
+                      onMovePatientToRoom(patient.id, targetRoom)
+                    } else {
+                      // 같은 방 내에서 순서 변경 시도
+                      console.log('🔄 같은 방 내 순서 변경 시도:', patient.patient_name)
+                      
+                      // 터치 위치를 기반으로 새로운 인덱스 계산
+                      const roomPatients = patients.filter(p => 
+                        (p.department === targetRoom || p.room === targetRoom) && p.id !== patient.id
+                      )
+                      
+                      let newIndex = roomPatients.length // 기본: 맨 아래
+                      
+                      // Y 위치를 기반으로 삽입 위치 결정
+                      for (let i = 0; i < roomPatients.length; i++) {
+                        const otherPatient = roomPatients[i]
+                        const otherCard = document.querySelector(`[data-patient-id="${otherPatient.id}"]`)
+                        
+                        if (otherCard) {
+                          const rect = otherCard.getBoundingClientRect()
+                          const cardMiddleY = rect.top + rect.height / 2
+                          
+                          if (touchCurrentPos.y < cardMiddleY) {
+                            newIndex = i
+                            break
+                          }
+                        }
+                      }
+                      
+                      console.log('🎯 계산된 새 인덱스:', newIndex, '/ 총', roomPatients.length + 1, '개')
+                      
+                      if (newIndex !== index) {
+                        console.log('✅ 같은 방 내 순서 변경 실행:', patient.patient_name, index, '→', newIndex)
+                        handleInternalReorder(patient.id, index, newIndex)
+                      } else {
+                        console.log('❌ 같은 위치 - 순서 변경 안함')
+                      }
                     }
                   } else {
-                    console.log('❌ 유효한 드롭존을 찾을 수 없음 - 드래그 취소')
-                    console.log('💡 올바른 방(Angio 1R, 2R, Hybrid Room)에 드롭해주세요')
+                    console.log('❌ 잘못된 방:', { targetRoom, validRooms })
                   }
                 }
                 
                 // 상태 초기화
                 setIsDragging(false)
+                setGlobalTouchDragging(false) // 전역 드래그 상태 초기화
                 setTouchStartPos(null)
                 setTouchCurrentPos(null)
               }
 
               return (
                 <div
+                  data-patient-id={patient.id}
                   draggable={!isAdminMode}
                   onDragStart={handleDragStart}
                   onDragEnd={handleDragEnd}
@@ -631,11 +739,11 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
                   onTouchEnd={handleTouchEnd}
               className={`
                     relative p-4 rounded-xl border-2 transition-all duration-300 
-                    ${!isAdminMode ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}
+                    ${!isAdminMode ? 'cursor-grab active:cursor-grabbing touch-manipulation select-none touch-drag-optimized touch-area-large touch-feedback' : 'cursor-default'}
                 ${getStatusColor(patient.status)}
                 ${patient.status === 'procedure' ? 'animate-pulse scale-105' : ''}
                 ${patient.status === 'completed' ? 'opacity-60' : ''}
-                    ${isDragging ? 'opacity-50 scale-110 rotate-3 shadow-2xl border-yellow-400 bg-yellow-900/20 z-50' : 'hover:shadow-lg hover:scale-102'}
+                    ${isDragging ? 'opacity-50 scale-110 rotate-3 shadow-2xl border-yellow-400 bg-yellow-900/20 z-50 dragging-touch' : (!isAdminMode ? 'hover:shadow-lg hover:scale-102 active:scale-95' : '')}
                     ${isNewlyAdded(patient) ? (isDarkMode 
                       ? 'ring-2 ring-green-400/50 shadow-lg shadow-green-400/20 bg-gradient-to-r from-green-900/10 to-emerald-900/10 animate-pulse' 
                       : 'ring-2 ring-green-400/60 shadow-lg shadow-green-400/30 bg-gradient-to-r from-green-50/80 to-emerald-50/80 animate-pulse'
@@ -646,7 +754,6 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
                     transform: isDragging ? 'rotate(8deg) scale(1.1)' : 'none',
                     zIndex: isDragging ? 9999 : 'auto'
                   }}
-                  title={isDragging ? '드래그 중... 다른 방에 놓으세요!' : (!isAdminMode ? '드래그해서 다른 방으로 이동' : '관리자 모드에서는 드래그 불가')}
                 >
                   {/* 새로 추가된 환자 인디케이터 */}
                   {isNewlyAdded(patient) && (
@@ -666,142 +773,99 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
                   
                   <div className="flex-1 min-w-0">
                     {editingPatient === patient.id ? (
-                      // 편집 모드
+                      // 편집 모드 - 새 환자 추가와 완전히 동일한 구조
                       <div className="space-y-2">
                       <div className="grid grid-cols-2 gap-2">
                         <input
-                            ref={numberInputRef}
+                          key={`number-${patient.id}`}
                           type="text"
-                          value={editValues.number}
-                            onChange={(e) => handleFieldChange('number', e.target.value, numberInputRef)}
-                            onFocus={() => handleFocus('number', numberInputRef)}
-                            onBlur={handleBlur}
-                            onKeyPress={(e) => {
-                              if (e.key === 'Enter') {
-                                saveField('number', e.target.value);
-                              }
-                            }}
-                            className={`px-2 py-1 border rounded text-sm font-bold digital-font transition-colors duration-300 ${
-                              isDarkMode 
-                                ? 'bg-gray-800 border-gray-600 text-white' 
-                                : 'bg-white border-gray-300 text-black'
-                            }`}
                           placeholder="등록번호"
+                          value={editValues.number}
+                          onChange={handleNumberChange}
+                          ref={(el) => inputRefs.current[`number-${patient.id}`] = el}
+                          className={`px-3 py-2 border rounded text-sm font-bold digital-font transition-colors duration-300 ${
+                            isDarkMode 
+                              ? 'bg-gray-800 border-gray-600 text-white' 
+                              : 'bg-white border-gray-300 text-black'
+                          }`}
                         />
                         <input
-                            ref={nameInputRef}
+                          key={`name-${patient.id}`}
                           type="text"
-                          value={editValues.name}
-                            onChange={(e) => handleFieldChange('name', e.target.value, nameInputRef)}
-                            onFocus={() => handleFocus('name', nameInputRef)}
-                            onBlur={handleBlur}
-                            onKeyPress={(e) => {
-                              if (e.key === 'Enter') {
-                                saveField('name', e.target.value);
-                              }
-                            }}
-                            className={`px-2 py-1 border rounded text-sm transition-colors duration-300 ${
-                              isDarkMode 
-                                ? 'bg-gray-800 border-gray-600 text-white' 
-                                : 'bg-white border-gray-300 text-black'
-                            }`}
                           placeholder="환자명"
+                          value={editValues.name}
+                          onChange={handleNameChange}
+                          ref={(el) => inputRefs.current[`name-${patient.id}`] = el}
+                          className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
+                            isDarkMode 
+                              ? 'bg-gray-800 border-gray-600 text-white' 
+                              : 'bg-white border-gray-300 text-black'
+                          }`}
                         />
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                           <input
-                            ref={procedureInputRef}
+                            key={`procedure-${patient.id}`}
                             type="text"
+                            placeholder="시술명 (예: Angio 1, PCI, Ablation)"
                             value={editValues.procedure}
-                            onChange={(e) => handleFieldChange('procedure', e.target.value, procedureInputRef)}
-                            onFocus={() => handleFocus('procedure', procedureInputRef)}
-                            onBlur={handleBlur}
-                            onKeyPress={(e) => {
-                              if (e.key === 'Enter') {
-                                saveField('procedure', e.target.value);
-                              }
-                            }}
-                            className={`px-2 py-1 border rounded text-sm transition-colors duration-300 ${
+                            onChange={handleProcedureChange}
+                            ref={(el) => inputRefs.current[`procedure-${patient.id}`] = el}
+                            className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
                               isDarkMode 
                                 ? 'bg-gray-800 border-gray-600 text-white' 
                                 : 'bg-white border-gray-300 text-black'
                             }`}
-                            placeholder="시술명"
                           />
                           <input
-                            ref={doctorInputRef}
+                            key={`doctor-${patient.id}`}
                             type="text"
+                            placeholder="담당의사"
                             value={editValues.doctor}
-                            onChange={(e) => handleFieldChange('doctor', e.target.value, doctorInputRef)}
-                            onFocus={() => handleFocus('doctor', doctorInputRef)}
-                            onBlur={handleBlur}
-                            onKeyPress={(e) => {
-                              if (e.key === 'Enter') {
-                                saveField('doctor', e.target.value);
-                              }
-                            }}
-                            className={`px-2 py-1 border rounded text-sm transition-colors duration-300 ${
+                            onChange={handleDoctorChange}
+                            ref={(el) => inputRefs.current[`doctor-${patient.id}`] = el}
+                            className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
                               isDarkMode 
                                 ? 'bg-gray-800 border-gray-600 text-white' 
                                 : 'bg-white border-gray-300 text-black'
                             }`}
-                            placeholder="담당의사"
                           />
                         </div>
                         <div className="grid grid-cols-1 gap-2">
                           <input
-                            ref={notesInputRef}
+                            key={`notes-${patient.id}`}
                             type="text"
+                            placeholder="비고 (선택사항)"
                             value={editValues.notes}
-                            onChange={(e) => handleFieldChange('notes', e.target.value, notesInputRef)}
-                            onFocus={() => handleFocus('notes', notesInputRef)}
-                            onBlur={handleBlur}
-                            onKeyPress={(e) => {
-                              if (e.key === 'Enter') {
-                                saveField('notes', e.target.value);
-                              }
-                            }}
-                            className={`px-2 py-1 border rounded text-sm transition-colors duration-300 ${
+                            onChange={handleNotesChange}
+                            ref={(el) => inputRefs.current[`notes-${patient.id}`] = el}
+                            className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
                               isDarkMode 
                                 ? 'bg-gray-800 border-gray-600 text-white' 
                                 : 'bg-white border-gray-300 text-black'
                             }`}
-                            placeholder="비고 (선택사항)"
                           />
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                           <input
-                            ref={genderAgeInputRef}
+                            key={`genderAge-${patient.id}`}
                             type="text"
+                            placeholder="성별/나이 (예: M/65, F/45)"
                             value={editValues.genderAge}
-                            onChange={(e) => handleFieldChange('genderAge', e.target.value, genderAgeInputRef)}
-                            onFocus={() => handleFocus('genderAge', genderAgeInputRef)}
-                            onBlur={handleBlur}
-                            onKeyPress={(e) => {
-                              if (e.key === 'Enter') {
-                                saveField('genderAge', e.target.value);
-                              }
-                            }}
-                            className={`px-2 py-1 border rounded text-sm transition-colors duration-300 ${
+                            onChange={handleGenderAgeChange}
+                            ref={(el) => inputRefs.current[`genderAge-${patient.id}`] = el}
+                            className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
                               isDarkMode 
                                 ? 'bg-gray-800 border-gray-600 text-white' 
                                 : 'bg-white border-gray-300 text-black'
                             }`}
-                            placeholder="성별/나이 (예: M/64)"
                           />
                           <select
-                            ref={wardSelectRef}
+                            key={`ward-${patient.id}`}
                             value={editValues.ward}
-                            onChange={(e) => {
-                              handleFieldChange('ward', e.target.value, wardSelectRef);
-                              // select 변경 시 즉시 저장
-                              if (e.target.value) {
-                                saveField('ward', e.target.value);
-                              }
-                            }}
-                            onFocus={() => handleFocus('ward', wardSelectRef)}
-                            onBlur={handleBlur}
-                            className={`px-2 py-1 border rounded text-sm transition-colors duration-300 ${
+                            onChange={handleWardChange}
+                            ref={(el) => inputRefs.current[`ward-${patient.id}`] = el}
+                            className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
                               isDarkMode 
                                 ? 'bg-gray-800 border-gray-600 text-white' 
                                 : 'bg-white border-gray-300 text-black'
@@ -823,8 +887,11 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                             <div className="flex items-center gap-2">
-                              {patient.ward && (
-                                <div className={`text-xs px-2 py-1 rounded transition-colors duration-300 ${getWardColor(patient.ward)}`}>
+                              {/* 병동이 있을 때만 표시 */}
+                              {patient.ward && patient.ward.trim() && (
+                                <div className={`text-xs px-2 py-1 rounded transition-colors duration-300 ${
+                                  getWardColor(patient.ward)
+                                }`}>
                                   {patient.ward}
                                 </div>
                               )}
@@ -867,6 +934,7 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
                             </div>
                           </div>
                         </div>
+                        {/* 비고가 있을 때만 표시 */}
                         {patient.notes && patient.notes.trim() && (
                           <div className={`text-sm font-medium px-2 py-1 rounded transition-colors duration-300 ${
                             isDarkMode ? 'bg-emerald-900/40 border border-emerald-600/60 text-emerald-200' : 'bg-indigo-100 border border-indigo-300 text-indigo-800'
@@ -885,7 +953,19 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
                     {isAdminMode ? (
                       <select
                         value={patient.status}
-                        onChange={(e) => handleStatusChange(patient.id, e.target.value)}
+                        onChange={(e) => {
+                          const newStatus = e.target.value;
+                          
+                          // 🔥 CAG 환자가 "시술완료"를 선택한 경우 PCI로 변경
+                          if (newStatus === 'procedure_completed' && 
+                              (patient.assigned_doctor || '').toUpperCase().includes('CAG')) {
+                            // CAG → PCI 변경 및 완료 상태로 설정
+                            onUpdatePatientProcedure(patient.id, 'PCI');
+                            onUpdatePatientStatus(patient.id, 'completed', 'PCI');
+                          } else {
+                            handleStatusChange(patient.id, newStatus);
+                          }
+                        }}
                         className={`px-2 py-1 border rounded text-xs pointer-events-auto transition-colors duration-300 ${
                           isDarkMode 
                             ? 'bg-gray-800 border-gray-600 text-white' 
@@ -895,6 +975,10 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
                         <option value="waiting">대기중</option>
                         <option value="procedure">시술중</option>
                         <option value="completed">완료</option>
+                        {/* CAG 환자인 경우에만 시술완료 옵션 표시 */}
+                        {(patient.assigned_doctor || '').toUpperCase().includes('CAG') && (
+                          <option value="procedure_completed">시술완료 (CAG→PCI)</option>
+                        )}
                       </select>
                     ) : (
                       <div className={`
@@ -983,9 +1067,10 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
               {/* 환자 카드 위쪽 드롭존 */}
               {index === 0 && (
                 <div
-                  className={`h-2 rounded transition-all duration-200 ${
-                    dragOverIndex === 0 ? 'bg-green-400/30 border-2 border-green-400 border-dashed' : ''
-                  }`}
+                  data-drop-index="0"
+                  className={`transition-all duration-200 ${
+                    dragOverIndex === 0 ? 'h-8 bg-green-400/30 border-2 border-green-400 border-dashed rounded-lg' : 'h-2'
+                  } ${globalTouchDragging ? 'bg-green-400/10 border border-green-400/30 border-dashed rounded-lg min-h-[8px]' : ''}`}
                   onDragOver={(e) => {
                     e.preventDefault()
                     setDragOverIndex(0)
@@ -1006,9 +1091,10 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
               
               {/* 환자 카드 아래쪽 드롭존 */}
               <div
-                className={`h-2 rounded transition-all duration-200 ${
-                  dragOverIndex === index + 1 ? 'bg-green-400/30 border-2 border-green-400 border-dashed' : ''
-                }`}
+                data-drop-index={index + 1}
+                className={`transition-all duration-200 ${
+                  dragOverIndex === index + 1 ? 'h-8 bg-green-400/30 border-2 border-green-400 border-dashed rounded-lg' : 'h-2'
+                } ${globalTouchDragging ? 'bg-green-400/10 border border-green-400/30 border-dashed rounded-lg min-h-[8px]' : ''}`}
                 onDragOver={(e) => {
                   e.preventDefault()
                   setDragOverIndex(index + 1)
@@ -1146,7 +1232,21 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
                   <div className="grid grid-cols-1 gap-2">
                     <select
                       value={newPatient.status}
-                      onChange={(e) => setNewPatient(prev => ({ ...prev, status: e.target.value }))}
+                      onChange={(e) => {
+                        const newStatus = e.target.value;
+                        
+                        // 🔥 CAG 환자가 "시술완료"를 선택한 경우 PCI로 변경
+                        if (newStatus === 'procedure_completed' && 
+                            newPatient.procedure.toUpperCase().includes('CAG')) {
+                          setNewPatient(prev => ({ 
+                            ...prev, 
+                            status: 'completed',
+                            procedure: 'PCI'
+                          }));
+                        } else {
+                          setNewPatient(prev => ({ ...prev, status: newStatus }));
+                        }
+                      }}
                       className={`px-3 py-2 border rounded text-sm transition-colors duration-300 ${
                         isDarkMode 
                           ? 'bg-gray-800 border-gray-600 text-white' 
@@ -1156,6 +1256,10 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
                       <option value="waiting">대기중</option>
                       <option value="procedure">시술중</option>
                       <option value="completed">완료</option>
+                      {/* CAG 환자인 경우에만 시술완료 옵션 표시 */}
+                      {newPatient.procedure.toUpperCase().includes('CAG') && (
+                        <option value="procedure_completed">시술완료 (CAG→PCI)</option>
+                      )}
                     </select>
                   </div>
                   <div className="flex gap-2">
@@ -1188,6 +1292,6 @@ const PatientQueue = ({ patients, roomTitle, isAdminMode, isPrivacyMode, isDarkM
       </div>
     </div>
   )
-}
+})
 
 export default PatientQueue

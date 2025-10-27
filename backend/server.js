@@ -9,34 +9,34 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: [
-      "http://localhost:5173", 
-      "https://9d45ee3c6609.ngrok.app", // 현재 프론트엔드 ngrok URL
-      "https://b62c635d9f86.ngrok.app", // 현재 백엔드 ngrok URL
-      /^https:\/\/.*\.ngrok-free\.app$/,
-      /^https:\/\/.*\.ngrok\.app$/,
-      /^https:\/\/.*\.loca\.lt$/
-    ],
+    origin: process.env.NODE_ENV === 'production' 
+      ? true  // 프로덕션: 모든 origin 허용 (Nginx가 제어)
+      : [
+          "http://localhost:5173",  // 로컬 개발
+          /^https:\/\/.*\.ngrok-free\.app$/,  // ngrok 테스트
+          /^https:\/\/.*\.ngrok\.app$/,
+          /^https:\/\/.*\.loca\.lt$/
+        ],
     methods: ["GET", "POST"],
     credentials: true
   },
-  // ngrok 호환성을 위한 설정 (polling만 사용)
-  transports: ['polling'],
+  // WebSocket 우선, 폴링 백업
+  transports: ['websocket', 'polling'],
   allowEIO3: true,
-  pingTimeout: 120000, // ngrok 타임아웃 고려
-  pingInterval: 30000
+  pingTimeout: 60000, // 핑 타임아웃 단축 (더 빠른 응답)
+  pingInterval: 5000 // 핑 간격 단축 (더 빠른 감지)
 });
 
 // 미들웨어 설정
 app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "https://9d45ee3c6609.ngrok.app", // 현재 프론트엔드 ngrok URL
-    "https://b62c635d9f86.ngrok.app", // 현재 백엔드 ngrok URL
-    /^https:\/\/.*\.ngrok-free\.app$/,
-    /^https:\/\/.*\.ngrok\.app$/,
-    /^https:\/\/.*\.loca\.lt$/
-  ],
+  origin: process.env.NODE_ENV === 'production'
+    ? true  // 프로덕션: 모든 origin 허용 (Nginx가 제어)
+    : [
+        "http://localhost:5173",  // 로컬 개발
+        /^https:\/\/.*\.ngrok-free\.app$/,  // ngrok 테스트
+        /^https:\/\/.*\.ngrok\.app$/,
+        /^https:\/\/.*\.loca\.lt$/
+      ],
   credentials: true
 }));
 app.use(express.json());
@@ -56,6 +56,30 @@ db.serialize(() => {
     current_patient TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+
+  // 날짜별 당직 정보 테이블
+  db.run(`CREATE TABLE IF NOT EXISTS doctor_schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_date TEXT NOT NULL,
+    doctor_name TEXT DEFAULT '',
+    rn_name TEXT DEFAULT '',
+    pa_name TEXT DEFAULT '',
+    rt_name TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(schedule_date)
+  )`);
+
+  console.log('✅ 날짜별 당직 정보 테이블 생성 완료');
+
+  // 기존 테이블에 PA 컬럼 추가 (마이그레이션)
+  db.run(`ALTER TABLE doctor_schedules ADD COLUMN pa_name TEXT DEFAULT ''`, (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.log('PA 필드 추가 중 오류 (이미 존재할 수 있음):', err.message);
+    } else if (!err) {
+      console.log('✅ doctor_schedules 테이블에 PA(pa_name) 필드 추가 완료');
+    }
+  });
 
   // 환자 대기열 테이블
   db.run(`CREATE TABLE IF NOT EXISTS patient_queue (
@@ -80,6 +104,24 @@ db.serialize(() => {
       console.error('added_at 컬럼 추가 실패:', err);
     } else if (!err) {
       console.log('✅ added_at 컬럼 추가 완료');
+    }
+  });
+
+  // 현지 시간 기준 오늘 날짜 함수 (시간대 문제 해결)
+  const getTodayDate = () => {
+    const today = new Date()
+    const year = today.getFullYear()
+    const month = String(today.getMonth() + 1).padStart(2, '0')
+    const day = String(today.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+
+  // 기존 테이블에 patient_date 컬럼 추가 (날짜별 환자 관리용)
+  db.run(`ALTER TABLE patient_queue ADD COLUMN patient_date TEXT DEFAULT '${getTodayDate()}'`, (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.error('patient_date 컬럼 추가 실패:', err);
+    } else if (!err) {
+      console.log('✅ patient_date 컬럼 추가 완료');
     }
   });
 
@@ -294,13 +336,53 @@ app.get('/api/doctors', (req, res) => {
 });
 
 app.get('/api/patients', (req, res) => {
-  db.all("SELECT * FROM patient_queue ORDER BY department, display_order, priority DESC, created_at ASC", (err, rows) => {
+  const { date } = req.query;
+  
+  let query = "SELECT * FROM patient_queue";
+  let params = [];
+  
+  if (date) {
+    query += " WHERE patient_date = ?";
+    params.push(date);
+  } else {
+    // 날짜가 지정되지 않으면 오늘 날짜의 환자만 조회
+    const today = new Date().toISOString().split('T')[0];
+    query += " WHERE patient_date = ?";
+    params.push(today);
+  }
+  
+  query += " ORDER BY department, display_order, priority DESC, created_at ASC";
+  
+  console.log('📅 환자 조회 요청:', { date: date || '오늘', query });
+  
+  db.all(query, params, (err, rows) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
     }
+    console.log('📅 환자 조회 결과:', rows.length, '명');
     res.json(rows);
   });
+});
+
+// 날짜별 환자 목록 조회 API
+app.get('/api/patients/date/:date', (req, res) => {
+  const { date } = req.params;
+  
+  console.log('📅 특정 날짜 환자 조회:', date);
+  
+  db.all(
+    "SELECT * FROM patient_queue WHERE patient_date = ? ORDER BY department, display_order, priority DESC, created_at ASC",
+    [date],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      console.log('📅 날짜별 환자 조회 결과:', date, rows.length, '명');
+      res.json(rows);
+    }
+  );
 });
 
 app.get('/api/stats', (req, res) => {
@@ -463,21 +545,62 @@ app.post('/api/doctors/:id/status', (req, res) => {
   );
 });
 
-// 당직 의료진 조회
+// 날짜별 당직 의료진 조회
 app.get('/api/duty', (req, res) => {
-  db.all("SELECT * FROM duty_staff ORDER BY staff_type", (err, rows) => {
+  const { date } = req.query;
+  const targetDate = date || getTodayDate();
+  
+  db.get("SELECT * FROM doctor_schedules WHERE schedule_date = ?", [targetDate], (err, row) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
     }
     
-    // 데이터를 프론트엔드 형식으로 변환
-    const dutyStaff = {};
-    rows.forEach(row => {
-      dutyStaff[row.staff_type] = row.staff_name;
-    });
+    if (row) {
+      // 날짜별 당직 정보가 있으면 반환
+      res.json({
+        doctor: row.doctor_name || '',
+        rn: row.rn_name || '',
+        pa: row.pa_name || '',
+        rt: row.rt_name || ''
+      });
+    } else {
+      // 데이터가 없으면 빈 값 반환
+      res.json({
+        doctor: '',
+        rn: '',
+        pa: '',
+        rt: ''
+      });
+    }
+  });
+});
+
+// 날짜별 당직 의료진 조회 (명시적 날짜)
+app.get('/api/duty/date/:date', (req, res) => {
+  const { date } = req.params;
+  
+  db.get("SELECT * FROM doctor_schedules WHERE schedule_date = ?", [date], (err, row) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
     
-    res.json(dutyStaff);
+    if (row) {
+      res.json({
+        doctor: row.doctor_name || '',
+        rn: row.rn_name || '',
+        pa: row.pa_name || '',
+        rt: row.rt_name || ''
+      });
+    } else {
+      res.json({
+        doctor: '',
+        rn: '',
+        pa: '',
+        rt: ''
+      });
+    }
   });
 });
 
@@ -512,6 +635,50 @@ app.post('/api/duty', (req, res) => {
     console.error('❌ 당직 의료진 업데이트 실패:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// 날짜별 당직 의료진 업데이트 (새로운 API)
+app.post('/api/duty/schedule', (req, res) => {
+  const { dutyStaff, date } = req.body;
+  const targetDate = date || getTodayDate();
+  
+  if (!dutyStaff) {
+    return res.status(400).json({ error: 'Duty staff data is required' });
+  }
+  
+  console.log(`🔥 ${targetDate} 당직 의료진 업데이트 요청:`, dutyStaff);
+  
+  const doctorName = dutyStaff.doctor || '';
+  const rnName = dutyStaff.rn || '';
+  const paName = dutyStaff.pa || '';
+  const rtName = dutyStaff.rt || '';
+  
+  db.run(
+    "INSERT OR REPLACE INTO doctor_schedules (schedule_date, doctor_name, rn_name, pa_name, rt_name, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+    [targetDate, doctorName, rnName, paName, rtName],
+    function(err) {
+      if (err) {
+        console.error('❌ 당직 의료진 업데이트 실패:', err);
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      
+      console.log(`✅ ${targetDate} 당직 의료진 업데이트 완료`);
+      
+      // 모든 클라이언트에게 업데이트 알림
+      io.emit('duty_schedule_updated', {
+        date: targetDate,
+        dutyStaff: {
+          doctor: doctorName,
+          rn: rnName,
+          pa: paName,
+          rt: rtName
+        }
+      });
+      
+      res.json({ success: true, dutyStaff: { doctor: doctorName, rn: rnName, pa: paName, rt: rtName } });
+    }
+  );
 });
 
 // 환자 상태 업데이트
@@ -634,14 +801,17 @@ app.post('/api/patients/:id/status', (req, res) => {
 
 // 새 환자 추가
 app.post('/api/patients', (req, res) => {
-  const { patient_name, patient_id, department, assigned_doctor, doctor, priority, notes, gender_age, ward } = req.body;
+  const { patient_name, patient_id, department, assigned_doctor, doctor, priority, notes, gender_age, ward, patient_date } = req.body;
   
-  console.log('🆕 새 환자 추가 요청:', { patient_name, patient_id, department, assigned_doctor, doctor, priority, notes, gender_age, ward });
+  // 환자 날짜 설정 (요청에서 온 날짜 또는 오늘 날짜)
+  const patientDateToUse = patient_date || getTodayDate();
   
-  // 중복 확인
+  console.log('🆕 새 환자 추가 요청:', { patient_name, patient_id, department, assigned_doctor, doctor, priority, notes, gender_age, ward, patient_date: patientDateToUse });
+  
+  // 🔥 같은 날짜 내에서만 중복 확인 (다른 날짜는 허용)
   db.get(
-    "SELECT id FROM patient_queue WHERE patient_id = ?",
-    [patient_id],
+    "SELECT id FROM patient_queue WHERE patient_id = ? AND patient_date = ?",
+    [patient_id, patientDateToUse],
     (err, existingPatient) => {
       if (err) {
         res.status(500).json({ error: err.message });
@@ -649,10 +819,12 @@ app.post('/api/patients', (req, res) => {
       }
       
       if (existingPatient) {
-        console.log('⚠️ 중복된 환자 ID:', patient_id);
-        res.status(400).json({ error: '이미 존재하는 환자 ID입니다.' });
+        console.log('⚠️ 같은 날짜에 중복된 환자 ID:', patient_id, '날짜:', patientDateToUse);
+        res.status(400).json({ error: `${patientDateToUse} 날짜에 이미 존재하는 환자 ID입니다.` });
         return;
       }
+      
+      console.log('✅ 중복 체크 통과 - 환자ID:', patient_id, '날짜:', patientDateToUse);
       
       // 같은 방의 현재 최대 순서 조회 후 새 환자 추가
       db.get(
@@ -668,9 +840,10 @@ app.post('/api/patients', (req, res) => {
           const nextOrder = (result?.max_order || 0) + 1;
           
           // 새 환자 추가
+          const patientDateToUse = patient_date || getTodayDate(); // 날짜가 없으면 오늘 날짜 사용 (현지 시간 기준)
           db.run(
-            "INSERT INTO patient_queue (patient_name, patient_id, department, assigned_doctor, doctor, priority, notes, gender_age, ward, display_order, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [patient_name, patient_id, department, assigned_doctor, doctor, priority || 1, notes || '', gender_age || '', ward || '', nextOrder, Date.now()],
+            "INSERT INTO patient_queue (patient_name, patient_id, department, assigned_doctor, doctor, priority, notes, gender_age, ward, display_order, added_at, patient_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [patient_name, patient_id, department, assigned_doctor, doctor, priority || 1, notes || '', gender_age || '', ward || '', nextOrder, Date.now(), patientDateToUse],
         function(err) {
           if (err) {
             res.status(500).json({ error: err.message });
@@ -685,18 +858,31 @@ app.post('/api/patients', (req, res) => {
             department,
             assigned_doctor: assigned_doctor || null,
             doctor: doctor || null,
+            notes: notes || '', // 비고 필드 추가
+            gender_age: gender_age || '', // 성별/나이 필드 추가
+            ward: ward || '', // 병동 필드 추가
             priority: priority || 1,
             status: 'waiting',
             wait_time: 0,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
-            added_at: addedAtTime // 데이터베이스와 일치하도록 added_at 사용
+            added_at: addedAtTime, // 데이터베이스와 일치하도록 added_at 사용
+            patient_date: patientDateToUse // 환자 날짜 추가
           };
           
           console.log('✅ 새 환자 추가 완료:', newPatient);
           
           // 실시간으로 모든 클라이언트에게 새 환자 정보 전송
           io.emit('patient_added', newPatient);
+          
+          // 전체 환자 목록도 함께 전송하여 확실한 동기화
+          db.all("SELECT * FROM patient_queue ORDER BY created_at", (err, allPatients) => {
+            if (!err) {
+              console.log(`📤 환자 추가 후 전체 목록 재전송 (${allPatients.length}명)`);
+              io.emit('patients_data', allPatients);
+            }
+          });
+          
           updateHospitalStats();
           res.json(newPatient);
           }
@@ -926,23 +1112,96 @@ io.on('connection', (socket) => {
     
     // 실시간 데이터 동기화 처리
     if (data.type === 'update_patient_name') {
-      console.log(`🚀 환자 이름 업데이트를 모든 클라이언트에게 브로드캐스트: ${data.patientId} -> ${data.newName}`);
-      // 모든 클라이언트에게 환자 이름 업데이트 전송 (본인 제외)
-      socket.broadcast.emit('patient_name_updated', {
-        patientId: data.patientId,
-        newName: data.newName
-      });
-      // 모든 클라이언트에게 전송 (본인 포함)
-      io.emit('patient_name_updated', {
-        patientId: data.patientId,
-        newName: data.newName
+      console.log(`👤 환자 이름 업데이트 요청 받음: 환자ID=${data.patientId}, 새이름="${data.newName}"`);
+      
+      // 먼저 기존 환자 정보 확인
+      db.get("SELECT * FROM patient_queue WHERE id = ?", [data.patientId], (err, patient) => {
+        if (err) {
+          console.error('환자 조회 실패:', err);
+          return;
+        }
+        
+        if (!patient) {
+          console.error('환자를 찾을 수 없음:', data.patientId);
+          return;
+        }
+        
+        console.log(`📋 기존 환자 정보: ${patient.patient_name}, 새이름="${data.newName}"`);
+        
+        // 데이터베이스 업데이트
+        db.run(
+          "UPDATE patient_queue SET patient_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [data.newName, data.patientId],
+          function(err) {
+            if (err) {
+              console.error('❌ 환자 이름 데이터베이스 업데이트 실패:', err);
+              return;
+            }
+            
+            console.log(`✅ 환자 이름 데이터베이스 업데이트 성공: ${patient.patient_name} → "${data.newName}"`);
+            console.log(`📊 영향받은 행 수: ${this.changes}`);
+            
+            // 모든 클라이언트에게 업데이트 전송
+            io.emit('patient_name_updated', {
+              patientId: data.patientId,
+              newName: data.newName
+            });
+            
+            // 전체 환자 목록도 다시 전송하여 확실한 동기화
+            db.all("SELECT * FROM patient_queue ORDER BY created_at", (err, allPatients) => {
+              if (!err) {
+                console.log(`📤 전체 환자 목록 재전송 (${allPatients.length}명)`);
+                io.emit('patients_data', allPatients);
+              }
+            });
+          }
+        );
       });
     } else if (data.type === 'update_patient_number') {
-      console.log(`🚀 환자 번호 업데이트를 모든 클라이언트에게 브로드캐스트: ${data.patientId} -> ${data.newNumber}`);
-      // 모든 클라이언트에게 환자 번호 업데이트 전송
-      io.emit('patient_number_updated', {
-        patientId: data.patientId,
-        newNumber: data.newNumber
+      console.log(`🔢 환자 등록번호 업데이트 요청 받음: 환자ID=${data.patientId}, 새등록번호="${data.newNumber}"`);
+      
+      // 먼저 기존 환자 정보 확인
+      db.get("SELECT * FROM patient_queue WHERE id = ?", [data.patientId], (err, patient) => {
+        if (err) {
+          console.error('환자 조회 실패:', err);
+          return;
+        }
+        
+        if (!patient) {
+          console.error('환자를 찾을 수 없음:', data.patientId);
+          return;
+        }
+        
+        console.log(`📋 기존 환자 정보: ${patient.patient_name}, 기존 등록번호="${patient.patient_id}", 새등록번호="${data.newNumber}"`);
+        
+        // 데이터베이스 업데이트
+        db.run(
+          "UPDATE patient_queue SET patient_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [data.newNumber, data.patientId],
+          function(err) {
+            if (err) {
+              console.error('❌ 환자 등록번호 데이터베이스 업데이트 실패:', err);
+              return;
+            }
+            
+            console.log(`✅ 환자 등록번호 데이터베이스 업데이트 성공: ${patient.patient_name} → "${data.newNumber}"`);
+            console.log(`📊 영향받은 행 수: ${this.changes}`);
+            
+            // 모든 클라이언트에게 업데이트 전송
+            io.emit('patient_number_updated', {
+              patientId: data.patientId,
+              newNumber: data.newNumber
+            });
+            
+            // 전체 환자 목록도 다시 전송하여 확실한 동기화
+            db.all("SELECT * FROM patient_queue ORDER BY created_at", (err, allPatients) => {
+              if (!err) {
+                console.log(`📤 전체 환자 목록 재전송 (${allPatients.length}명)`);
+                io.emit('patients_data', allPatients);
+              }
+            });
+          }
+        );
       });
     } else if (data.type === 'update_patient_procedure') {
       console.log(`🏥 시술명 업데이트 요청 받음: 환자ID=${data.patientId}, 새시술명="${data.newProcedure}"`);
@@ -1254,6 +1513,33 @@ io.on('connection', (socket) => {
           io.emit('patient_ward_updated', {
             patientId: data.patientId,
             newWard: data.newWard
+          });
+          
+          // 전체 환자 목록 재전송
+          db.all("SELECT * FROM patient_queue ORDER BY created_at", (err, allPatients) => {
+            if (!err) {
+              io.emit('patients_data', allPatients);
+            }
+          });
+        }
+      );
+    } else if (data.type === 'update_patient_date') {
+      console.log(`📅 환자 날짜 업데이트 요청 받음: 환자ID=${data.patientId}, 날짜="${data.newDate}"`);
+      
+      db.run(
+        "UPDATE patient_queue SET patient_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [data.newDate, data.patientId],
+        function(err) {
+          if (err) {
+            console.error('환자 날짜 업데이트 실패:', err);
+            return;
+          }
+          
+          console.log(`✅ 환자 ${data.patientId}의 날짜 업데이트 완료 (${data.newDate})`);
+          
+          io.emit('patient_date_updated', {
+            patientId: data.patientId,
+            newDate: data.newDate
           });
           
           // 전체 환자 목록 재전송
